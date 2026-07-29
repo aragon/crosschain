@@ -126,4 +126,10 @@ library Errors {
     /// @notice Thrown when a retry cutoff is not strictly greater than the
     ///         current one, or is set in the future.
     error RETRY_CUTOFF_INVALID(uint256 originChainId, uint120 currentCutoff, uint120 newCutoff);
+
+    /// @notice Thrown when a delivery does not carry enough gas to both attempt
+    ///         the payload and reserve what the failure path needs to record it.
+    /// @dev Reverting leaves the message in the bridge's failed state, where it
+    ///      stays manually executable with a higher gas limit.
+    error INSUFFICIENT_GAS(uint256 available, uint256 required);
 }

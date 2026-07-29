@@ -8,18 +8,17 @@ import { CCIPAdapter } from "@src/adapters/CCIP/CCIPAdapter.sol";
 import { BaseAdapter } from "@src/adapters/BaseAdapter.sol";
 import { IBaseAdapter } from "@src/adapters/IBaseAdapter.sol";
 import { Errors } from "@src/lib/Errors.sol";
+import { Transaction, TransactionLib } from "@src/lib/Transaction.sol";
 import { ERC20Mock } from "@mocks/ERC20Mock.sol";
-import { CCIPRouterMock } from "@mocks/CCIPRouterMock.sol";
+import { CCIPRouterMock } from "@mocks/ccip/CCIPRouterMock.sol";
+import { TrustedRemoteWritingCCIPAdapter } from "@mocks/ccip/TrustedRemoteWritingCCIPAdapter.sol";
+import { OversizedSelectorCCIPAdapter } from "@mocks/ccip/OversizedSelectorCCIPAdapter.sol";
 
 contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
     // -------------------------------------------------------------------------
     // `sendMessage` can ONLY be reached via `delegatecall` from the controller.
     // -------------------------------------------------------------------------
 
-    /// @dev THE core guard of the redesign. `onlyDelegatecallFromController`
-    ///      checks `address(this) == CROSS_CHAIN_CONTROLLER`, NOT `msg.sender`
-    ///      -- so `vm.prank(address(controller))` does nothing here; a direct
-    ///      call to the adapter always has `address(this) == address(adapter)`.
     function test_revertsIfCalledDirectly_evenWhenCallerIsTheController() public {
         vm.expectRevert(abi.encodeWithSelector(Errors.SEND_PATH_NOT_DELEGATECALLED.selector, address(adapter)));
         vm.prank(address(controller));
@@ -32,23 +31,49 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
         adapter.sendMessage(remoteAdapter, SEL_ETH_MAINNET, 200_000, "");
     }
 
-    /// @dev `ZERO_ADDRESS` sits BEHIND `onlyDelegatecallFromController`
-    ///      and is unreachable through the real controller today. `isolationAdapter`
-    ///      + `delegateCallerMock` reproduce the `address(this) ==
-    ///      CROSS_CHAIN_CONTROLLER` context directly to prove the check works.
-    function test_isolated_revertsIfReceiverIsZero() public {
+    function test_revertsIfReceiverIsZero() public {
         bytes memory data = abi.encodeCall(IBaseAdapter.sendMessage, (address(0), SEL_ETH_MAINNET, 200_000, bytes("")));
 
         vm.expectRevert(Errors.ZERO_ADDRESS.selector);
         delegateCallerMock.delegateCall(address(isolationAdapter), data);
     }
 
-    function test_isolated_revertsIfNativeValueSentWhileErc20FeeTokenConfigured() public {
+    function test_revertsIfNativeValueSentWhileErc20FeeTokenConfigured() public {
         bytes memory data =
             abi.encodeCall(IBaseAdapter.sendMessage, (remoteAdapter, CHAIN_ETH_MAINNET, 200_000, bytes("")));
 
         vm.expectRevert(Errors.UNEXPECTED_NATIVE_VALUE.selector);
         delegateCallerMock.delegateCall{ value: 1 ether }(address(isolationAdapter), data);
+    }
+
+    /// @dev `toNativeChainId` is `virtual`; the built-in map only ever returns
+    ///      `uint64`-sized CCIP selectors, so the `SafeCast.toUint64` on the
+    ///      send path can only trip via a subclass whose map returns a wider
+    ///      value. The cast must revert rather than silently truncate the
+    ///      selector and dispatch to the wrong lane.
+    function test_revertsIfNativeChainIdDoesNotFitUint64() public {
+        OversizedSelectorCCIPAdapter oversizedAdapter =
+            new OversizedSelectorCCIPAdapter(address(controller), address(router));
+        _registerLane(CHAIN_ETH_MAINNET, address(oversizedAdapter), remoteAdapter);
+
+        vm.expectRevert("SafeCast: value doesn't fit in 64 bits");
+        controller.forwardMessage(CHAIN_ETH_MAINNET, 200_000, "");
+
+        assertEq(router.ccipSendCallCount(), 0, "no message may be dispatched with a truncated selector");
+    }
+
+    /// @dev The controller registers lanes without consulting the adapter's
+    ///      chain-id map, so a lane can exist for a standard chain id the
+    ///      adapter cannot translate into a CCIP selector. The send must then
+    ///      revert with `UNKNOWN_CHAIN_ID` instead of reaching the router.
+    function test_revertsIfDestinationChainIdUnknownToAdapter() public {
+        uint256 unknownChainId = 42;
+        _registerLane(unknownChainId, address(adapter), remoteAdapter);
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.UNKNOWN_CHAIN_ID.selector, unknownChainId));
+        controller.forwardMessage(unknownChainId, 200_000, "");
+
+        assertEq(router.ccipSendCallCount(), 0, "no message may be dispatched for an unmapped chain id");
     }
 
     // -------------------------------------------------------------------------
@@ -67,35 +92,8 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
             abi.encodeWithSelector(Errors.DESTINATION_CHAIN_ID_NOT_SUPPORTED.selector, uint256(SEL_ETH_MAINNET))
         );
         controller.forwardMessage(CHAIN_ETH_MAINNET, 200_000, "");
-    }
-
-    function test_unsupportedDestinationChain_neverReachesRouterSend() public {
-        _registerLane(CHAIN_ETH_MAINNET, address(adapter), remoteAdapter);
-        vm.deal(address(controller), 1 ether);
-
-        router.setChainSupported(false);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(Errors.DESTINATION_CHAIN_ID_NOT_SUPPORTED.selector, uint256(SEL_ETH_MAINNET))
-        );
-        controller.forwardMessage(CHAIN_ETH_MAINNET, 200_000, "");
 
         assertEq(router.ccipSendCallCount(), 0, "no message may be dispatched to an unsupported chain");
-    }
-
-    /// @dev The support check sits AHEAD of the fee logic, so an unsupported
-    ///      chain surfaces as `DESTINATION_CHAIN_ID_NOT_SUPPORTED` rather than
-    ///      as a misleading insufficient-balance error.
-    function test_unsupportedDestinationChain_takesPrecedenceOverInsufficientFeeBalance() public {
-        _registerLane(CHAIN_ETH_MAINNET, address(adapter), remoteAdapter);
-        router.setFee(1 ether);
-        // Controller is left with a zero balance: the fee check would revert too.
-        router.setChainSupported(false);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(Errors.DESTINATION_CHAIN_ID_NOT_SUPPORTED.selector, uint256(SEL_ETH_MAINNET))
-        );
-        controller.forwardMessage(CHAIN_ETH_MAINNET, 200_000, "");
     }
 
     function test_sendSucceedsWhenRouterSupportsDestinationChain() public {
@@ -116,14 +114,13 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
     // Fees -- the controller pays, the adapter never holds funds.
     // -------------------------------------------------------------------------
 
-    /// @dev Regression test for the missing `forceApprove`: a naive adapter
-    ///      that never approves the router would make `CCIPRouterMock`'s
-    ///      `transferFrom` pull revert on zero allowance.
     function test_erc20Fee_approvesRouterAndRouterPullsExactFee() public {
         _registerLane(CHAIN_ETH_MAINNET, address(erc20Adapter), remoteAdapter);
         uint256 feeAmount = 3 ether;
         router.setFee(feeAmount);
         feeTokenErc20.setBalance(address(controller), feeAmount);
+
+        assertEq(feeTokenErc20.balanceOf(address(controller)), feeAmount);
 
         // `forwardMessage` returns the txId; the router's messageId is surfaced
         // via the `MessageForwarded` event. Pin messageId (topic 2), ignore the
@@ -148,6 +145,18 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
         controller.forwardMessage(CHAIN_ETH_MAINNET, 200_000, "");
 
         assertEq(feeTokenErc20.allowance(address(controller), address(router)), 0);
+    }
+
+    function test_erc20Fee_TakesTheRequiredAndLeavesRemaining() public {
+        _registerLane(CHAIN_ETH_MAINNET, address(erc20Adapter), remoteAdapter);
+        uint256 feeAmount = 1 ether;
+        router.setFee(feeAmount);
+        feeTokenErc20.setBalance(address(controller), 3 ether);
+
+        controller.forwardMessage(CHAIN_ETH_MAINNET, 200_000, "");
+
+        assertEq(feeTokenErc20.allowance(address(controller), address(router)), 0);
+        assertEq(feeTokenErc20.balanceOf(address(controller)), 2 ether);
     }
 
     function test_erc20Fee_revertsIfControllerBalanceInsufficient() public {
@@ -176,6 +185,7 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
         assertEq(router.lastMsgValue(), feeAmount, "router must receive exactly the quoted fee");
         assertEq(address(controller).balance, 0);
         assertEq(address(adapter).balance, 0, "adapter must never hold native funds");
+        assertEq(address(router).balance, feeAmount, "router must hold native funds");
     }
 
     function test_nativeFee_revertsIfControllerBalanceInsufficient() public {
@@ -189,6 +199,17 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
             abi.encodeWithSelector(Errors.INSUFFICIENT_FEE_BALANCE.selector, address(0), feeAmount, available)
         );
         controller.forwardMessage(CHAIN_ETH_MAINNET, 200_000, "");
+    }
+
+    function test_nativeFee_TakesTheRequiredAndLeavesRemaining() public {
+        _registerLane(CHAIN_ETH_MAINNET, address(adapter), remoteAdapter);
+        uint256 feeAmount = 1 ether;
+        uint256 available = 3 ether;
+        router.setFee(feeAmount);
+        vm.deal(address(controller), available);
+
+        controller.forwardMessage(CHAIN_ETH_MAINNET, 200_000, "");
+        assertEq(address(controller).balance, 2 ether);
     }
 
     // -------------------------------------------------------------------------
@@ -208,21 +229,38 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
         bytes memory payload = _emptyActionsPayload();
         uint256 gasLimit = 300_000;
 
-        // `forwardMessage` returns the txId; the router's messageId is surfaced
-        // via the `MessageForwarded` event. Pin messageId (topic 2), ignore the
-        // txId topic and the non-indexed data.
-        vm.expectEmit(true, true, false, false, address(controller));
+        // `forwardMessage` stamps nonce = ++_currentTxNonce (1 on first send),
+        // origin = msg.sender (this test), controller = the controller,
+        // originChainId = block.chainid. The txId is that envelope's id.
+        Transaction memory expectedTx = Transaction({
+            nonce: 1,
+            origin: address(this),
+            controller: address(controller),
+            originChainId: block.chainid,
+            destinationChainId: CHAIN_ETH_MAINNET,
+            message: payload
+        });
+        bytes32 expectedTxId = TransactionLib.id(expectedTx);
+        bytes memory expectedEnvelope = TransactionLib.encode(expectedTx);
+
+        vm.expectEmit(true, true, true, true, address(controller));
         emit MessageForwarded(
-            CHAIN_ETH_MAINNET, uint256(expectedMessageId), bytes32(0), "", address(0), address(0), 0, 0
+            CHAIN_ETH_MAINNET,
+            uint256(expectedMessageId),
+            expectedTxId,
+            expectedEnvelope,
+            address(adapter),
+            remoteAdapter,
+            gasLimit,
+            feeAmount
         );
 
-        controller.forwardMessage(CHAIN_ETH_MAINNET, gasLimit, payload);
+        bytes32 txId = controller.forwardMessage(CHAIN_ETH_MAINNET, gasLimit, payload);
+        assertEq(txId, expectedTxId);
 
         address decodedReceiver = abi.decode(router.lastReceiver(), (address));
         assertEq(decodedReceiver, remoteAdapter, "router must target the remote adapter");
-        // The bridge `data` is the encoded envelope the controller wraps the
-        // message in, not the raw `payload`; assert the receiver/selector/fee
-        // routing instead of pinning the exact envelope bytes here.
+        assertEq(router.lastData(), expectedEnvelope, "bridge data must be the exact encoded envelope");
         assertEq(router.lastFeeToken(), address(0));
         assertEq(router.lastDestChainSelector(), SEL_ETH_MAINNET);
         assertEq(router.lastMsgValue(), feeAmount);
@@ -281,13 +319,13 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
     // -------------------------------------------------------------------------
 
     /// @dev Snapshots the controller's storage byte-for-byte around a successful
-    ///      `forwardMessage`, using the REAL `CCIPAdapter`. Layout (per
-    ///      `forge inspect .../CrossChainController.sol storageLayout`):
-    ///      slot 0 = `Pausable._paused`, slot 1 = `_currentTxNonce`, slot 2 =
-    ///      `_transactions`, slot 3 = `chainToAdapter`. The nonce slot
-    ///      legitimately increments on send (checked separately); everything
-    ///      else must be untouched, as must the adapter's own (separate-address)
-    ///      storage.
+    ///      `forwardMessage`, using the REAL `CCIPAdapter`. The slot constants
+    ///      live in `Base.t.sol` and are pinned to the real layout by
+    ///      `test_storageSlotConstantsMatchLayout` -- a stale one would make
+    ///      the assertions below read an untouched word and pass vacuously.
+    ///      The nonce slot legitimately increments on send (asserted
+    ///      separately); everything else must be untouched, as must the
+    ///      adapter's own (separate-address) storage.
     function test_doesNotCollideWithControllerStorage() public {
         _registerLane(CHAIN_ETH_MAINNET, address(adapter), remoteAdapter);
 
@@ -347,14 +385,40 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
         );
     }
 
+    function test_sendPathWritingTrustedRemotes_corruptsControllerStorageNotTheAdapters() public {
+        TrustedRemoteWritingCCIPAdapter statefulAdapter =
+            new TrustedRemoteWritingCCIPAdapter(address(controller), address(router));
+        _registerLane(CHAIN_ETH_MAINNET, address(statefulAdapter), remoteAdapter);
+
+        uint256 feeAmount = 0.01 ether;
+        router.setFee(feeAmount);
+        vm.deal(address(controller), feeAmount);
+
+        // Where `_trustedRemotes[CHAIN_ETH_MAINNET]` resolves when slot 0 is
+        // the controller's.
+        bytes32 aliasedSlot = keccak256(abi.encode(CHAIN_ETH_MAINNET, uint256(0)));
+        assertEq(vm.load(address(controller), aliasedSlot), bytes32(0));
+
+        controller.forwardMessage(CHAIN_ETH_MAINNET, 200_000, "");
+
+        // The controller passes `config.remoteAdapter` as the receiver, so
+        // that is the value the misdirected write stores.
+        assertEq(
+            vm.load(address(controller), aliasedSlot),
+            bytes32(uint256(uint160(remoteAdapter))),
+            "the trusted-remote write must land in the controller's storage"
+        );
+        assertEq(
+            statefulAdapter.trustedRemote(CHAIN_ETH_MAINNET),
+            address(0),
+            "the adapter's own trusted-remote mapping must stay untouched"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // Fee-token immutability trade-off: no `setFeeToken`.
     // -------------------------------------------------------------------------
 
-    /// @dev There is no setter to rotate `FEE_TOKEN` -- it is `immutable`.
-    ///      Rotating means deploying a SECOND `CCIPAdapter` and repointing the
-    ///      lane via `updateConfig`, which de-registers the old local adapter
-    ///      and registers the new one.
     function test_feeTokenRotation_requiresDeployingANewAdapterAndRepointingTheLane() public {
         ERC20Mock newFeeToken = new ERC20Mock("New Fee Token", "NEWFEE");
         CCIPAdapter newAdapter = new CCIPAdapter(
@@ -385,3 +449,4 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
         assertEq(router.lastFeeToken(), address(newFeeToken), "send must now use the new adapter's fee token");
     }
 }
+

@@ -34,6 +34,10 @@ abstract contract CrossChainControllerBase is Test, ICrossChainControllerEvents 
     // (destination on send, origin on receive) -- never this contract's own
     // chain. `OTHER_CHAIN_ID` is simply a second remote chain, used by tests
     // that need two lanes at once.
+    // / @dev The failure-path gas reserve every fixture controller is
+    // / initialized with. See `CrossChainController.initialize`.
+    uint256 internal constant MIN_FAILED_MESSAGE_GAS = 45_000;
+
     uint256 internal constant CHAIN_ID = 10;
     uint256 internal constant OTHER_CHAIN_ID = 20;
     uint256 internal constant GAS_LIMIT = 200_000;
@@ -112,7 +116,7 @@ abstract contract CrossChainControllerBase is Test, ICrossChainControllerEvents 
         return CrossChainController(
             payable(ProxyLib.deployUUPSProxy(
                     address(controllerImplementation),
-                    abi.encodeCall(CrossChainController.initialize, (IDAO(_dao), _executor))
+                    abi.encodeCall(CrossChainController.initialize, (IDAO(_dao), _executor, MIN_FAILED_MESSAGE_GAS))
                 ))
         );
     }

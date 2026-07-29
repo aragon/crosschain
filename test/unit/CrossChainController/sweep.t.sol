@@ -37,6 +37,14 @@ contract CrossChainControllerSweepTest is CrossChainControllerBase {
         assertEq(address(controller).balance, 3 ether);
     }
 
+    function test_erc20_revertsWhenSweepingMoreThanBalance() public {
+        feeToken.setBalance(address(controller), 1 ether);
+
+        vm.expectRevert("ERC20: transfer amount exceeds balance");
+        vm.prank(alice);
+        controller.sweep(address(feeToken), makeAddr("recipient"), 2 ether);
+    }
+
     function test_erc20_movesExactAmountAndEmits() public {
         feeToken.setBalance(address(controller), 10 ether);
         address recipient = makeAddr("recipient");

@@ -43,11 +43,7 @@ contract CCIPAdapterCcipReceiveTest is CCIPAdapterBase {
         adapter.ccipReceive(message);
     }
 
-    /// @dev The success path: sender IS the remote CONTROLLER. The inbound
-    ///      `data` is an encoded `Transaction` envelope (not a raw `Action[]`),
-    ///      and the emitted id is the envelope's `TransactionLib.id` derived
-    ///      from the decoded payload -- NOT a bridge-messageId-derived call id.
-    ///      `messageId` survives only as an event field.
+    /// @dev The success path: sender IS the remote CONTROLLER.
     function test_succeedsWhenSenderIsRemoteControllerAndForwardsToController() public {
         _registerLane(CHAIN_ETH_MAINNET, address(adapter), remoteAdapter);
 

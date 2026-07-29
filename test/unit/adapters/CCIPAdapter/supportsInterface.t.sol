@@ -5,10 +5,15 @@ pragma solidity ^0.8.17;
 import { CCIPAdapterBase } from "./Base.t.sol";
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import { IAny2EVMMessageReceiver } from "@chainlink/contracts-ccip/contracts/interfaces/IAny2EVMMessageReceiver.sol";
+import { IBaseAdapter } from "@src/adapters/IBaseAdapter.sol";
 
 contract CCIPAdapterSupportsInterfaceTest is CCIPAdapterBase {
     function test_IAny2EVMMessageReceiver() public view {
         assertTrue(adapter.supportsInterface(type(IAny2EVMMessageReceiver).interfaceId));
+    }
+
+    function test_IBaseAdapter() public view {
+        assertTrue(adapter.supportsInterface(type(IBaseAdapter).interfaceId));
     }
 
     function test_IERC165() public view {

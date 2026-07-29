@@ -8,6 +8,7 @@ import { Transaction, TransactionState, TransactionLib } from "@src/lib/Transact
 import { Action } from "@aragon/osx-commons-contracts/src/executors/IExecutor.sol";
 import { DaoUnauthorized } from "@aragon/osx-commons-contracts/src/permission/auth/auth.sol";
 import { ActionExecute } from "@osx-test/mocks/commons/executors/ActionExecute.sol";
+import { FlakyTarget } from "@mocks/FlakyTarget.sol";
 
 contract CrossChainControllerRetryMessageTest is CrossChainControllerBase {
     function test_revertsIfCallerUnauthorized() public {
@@ -73,22 +74,5 @@ contract CrossChainControllerRetryMessageTest is CrossChainControllerBase {
 
         vm.prank(address(adapterA));
         controller.receiveMessage(_nonce, TransactionLib.encode(failedTx), CHAIN_ID);
-    }
-}
-
-/// @dev Minimal target whose revert behaviour can be flipped on demand, used
-///      to prove `retryMessage` succeeds once the underlying failure condition
-///      is actually fixed (as opposed to merely being re-run).
-contract FlakyTarget {
-    bool public shouldRevert = true;
-    bool public wasCalled;
-
-    function setShouldRevert(bool _shouldRevert) external {
-        shouldRevert = _shouldRevert;
-    }
-
-    function maybeRevert() external {
-        if (shouldRevert) revert("FlakyTarget: still failing");
-        wasCalled = true;
     }
 }

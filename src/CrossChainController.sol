@@ -51,6 +51,14 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     /// @notice The executor that inbound payloads are executed on.
     address public executor;
 
+    /// @notice Without a reserve the EVM hands the payload 63/64 of what is left
+    ///      and keeps only 1/64 - not enough to store `Delivered` AND emit, so
+    ///      an out-of-gas payload reverts the whole delivery and leaves NO
+    ///      record. The message is then unreachable by `retryMessage` and
+    ///      `cancelMessage`, recoverable only through the bridge's own manual
+    ///      execution. See `initialize` for sizing.
+    uint256 public minFailedMessageGas;
+
     /// @notice Restricts a function to local adapters registered via `updateConfig`.
     // forge-lint: disable-next-line(unwrapped-modifier-logic)
     modifier onlyLocalAdapter(uint256 _srcChainId) {
@@ -66,11 +74,15 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     /// @param _dao The DAO acting as this contract's permission manager.
     /// @param _executor The executor inbound payloads are executed on. Pass the
     ///        DAO itself to keep execution on the DAO.
-    function initialize(IDAO _dao, address _executor) external initializer {
+    /// @param _minFailedMessageGas Gas withheld from the payload so the `catch`
+    ///        in `receiveMessage` can always record a failed message as
+    ///        `Delivered`. **45000 is a good enough value.**
+    function initialize(IDAO _dao, address _executor, uint256 _minFailedMessageGas) external initializer {
         __PluginUUPSUpgradeable_init(_dao);
         __Pausable_init();
 
         _setExecutor(_executor);
+        _setMinFailedMessageGas(_minFailedMessageGas);
     }
 
     /// @notice Accepts native pre-funding used to pay bridge fees.
@@ -157,6 +169,16 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
         _retryCutoffs[_originChainId] = _cutoff;
 
         emit RetryCutoffUpdated(_originChainId, currentCutoff, _cutoff);
+    }
+
+    /// @notice Updates the gas withheld for recording a failed message.
+    /// @param _minFailedMessageGas The new reserve.
+    function updateMinFailedMessageGas(uint256 _minFailedMessageGas)
+        public
+        virtual
+        auth(Permissions.MANAGE_CONTROLLER_CONFIG_PERMISSION_ID)
+    {
+        _setMinFailedMessageGas(_minFailedMessageGas);
     }
 
     /// @notice Repoints this controller at a different executor.
@@ -267,9 +289,28 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
         // or not its actions executed. Shares a slot with `state`.
         record.bridgedAt = SafeCast.toUint120(block.timestamp);
 
+        // Reserve gas for the `catch` block before running the payload.
+        //
+        // Without this, the EVM hands the payload 63/64 of whatever is left and
+        // keeps only 1/64. Say 101,000 gas is left and the payload needs
+        // 100,000: it gets 99,421, runs out, and the `catch` is left with 1,579
+        // -- too little to store the state and emit. So the whole call reverts
+        // and nothing is written down.
+        //
+        // That is the wrong outcome. The message did arrive and its actions
+        // were attempted; only the actions failed. It should be recorded as
+        // `Delivered` so it can be retried or cancelled here. Holding gas back
+        // guarantees the `catch` can always do that.
+        uint256 reserve = minFailedMessageGas;
+        uint256 gasLimit = gasleft();
+        unchecked {
+            if (gasLimit < reserve) revert Errors.INSUFFICIENT_GAS(gasLimit, reserve);
+            gasLimit -= reserve;
+        }
+
         // The self-call also contains payload decoding, so a malformed payload
         // is captured for retry rather than reverting the bridge delivery.
-        try this.executeActions(txId, transaction.message) {
+        try this.executeActions{ gas: gasLimit }(txId, transaction.message) {
             emit MessageReceived(_originChainId, _messageId, txId, _encodedTx);
         } catch (bytes memory reason) {
             record.state = TransactionState.Delivered;
@@ -461,6 +502,15 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
         executor = _executor;
     }
 
+    /// @notice Helper function used by `initialize` and
+    ///         `updateMinFailedMessageGas`.
+    /// @dev `0` is a valid value and disables the reserve.
+    function _setMinFailedMessageGas(uint256 _minFailedMessageGas) internal virtual {
+        emit MinFailedMessageGasUpdated(minFailedMessageGas, _minFailedMessageGas);
+
+        minFailedMessageGas = _minFailedMessageGas;
+    }
+
     /// @notice Loads and validates the lane configuration for a destination.
     function _validatedConfig(uint256 _destinationChainId) internal view virtual returns (ChainConfig memory config) {
         config = chainToAdapter[_destinationChainId];
@@ -472,5 +522,5 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
 
     /// @notice This empty reserved space is put in place to allow future versions to add
     ///         new variables without shifting down storage in the inheritance chain.
-    uint256[45] private __gap;
+    uint256[44] private __gap;
 }

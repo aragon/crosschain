@@ -14,7 +14,7 @@ contract CrossChainControllerTransactionIdTest is CrossChainControllerBase {
         bytes32 id2 = _txId(1, CHAIN_ID, message);
         assertEq(id1, id2);
 
-        // Different nonce -> different id (the identity-carrying field).
+        // Different nonce -> different id
         assertTrue(id1 != _txId(2, CHAIN_ID, message));
         // Different origin chain -> different id.
         assertTrue(id1 != _txId(1, OTHER_CHAIN_ID, message));

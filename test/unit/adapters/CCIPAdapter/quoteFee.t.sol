@@ -14,6 +14,9 @@ contract CCIPAdapterQuoteFeeTest is CCIPAdapterBase {
     function test_revertsIfBridgeChainIdIsZero() public {
         vm.expectRevert(abi.encodeWithSelector(Errors.UNKNOWN_CHAIN_ID.selector, uint256(0)));
         adapter.quoteFee(remoteAdapter, 0, 200_000, "");
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.UNKNOWN_CHAIN_ID.selector, uint256(192391241)));
+        adapter.quoteFee(remoteAdapter, 192391241, 200_000, "");
     }
 
     function test_returnsRouterQuoteAndConfiguredFeeToken() public {

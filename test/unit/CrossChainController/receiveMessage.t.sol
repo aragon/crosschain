@@ -4,9 +4,11 @@ pragma solidity ^0.8.17;
 
 import { CrossChainControllerBase } from "./Base.t.sol";
 import { Errors } from "@src/lib/Errors.sol";
-import { TransactionState } from "@src/lib/Transaction.sol";
+import { Transaction, TransactionState, TransactionLib } from "@src/lib/Transaction.sol";
 import { Action } from "@aragon/osx-commons-contracts/src/executors/IExecutor.sol";
 import { AdapterMock } from "@mocks/AdapterMock.sol";
+import { CounterTarget } from "@mocks/CounterTarget.sol";
+import { ReentrantAdapterMock } from "@mocks/ReentrantAdapterMock.sol";
 import { ActionExecute } from "@osx-test/mocks/commons/executors/ActionExecute.sol";
 
 contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
@@ -31,6 +33,69 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
         controller.receiveMessage(1, _encodedEmptyTx(1, CHAIN_ID), CHAIN_ID);
     }
 
+    // -------------------------------------------------------------------------
+    // "Don't fully trust the adapter/bridge": the envelope's own chain ids must
+    // agree with the delivery, or the message is rejected outright.
+    // -------------------------------------------------------------------------
+
+    /// @dev A registered adapter (or the bridge behind it) claiming origin
+    ///      chain A while the envelope commits to origin chain B must be
+    ///      rejected: the claimed origin decides which lane's trust applies.
+    function test_revertsIfEnvelopeOriginChainDiffersFromClaimedOrigin() public {
+        _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
+
+        // Envelope committed to OTHER_CHAIN_ID, delivered as if from CHAIN_ID.
+        bytes memory encodedTx = _encodedEmptyTx(1, OTHER_CHAIN_ID);
+
+        vm.expectRevert(Errors.INCORRECT_CHAIN_MISMATCH.selector);
+        vm.prank(address(adapterA));
+        controller.receiveMessage(1, encodedTx, CHAIN_ID);
+    }
+
+    /// @dev An envelope addressed to a DIFFERENT destination chain must not
+    ///      execute here, even if origin and adapter check out -- this is the
+    ///      replay guard against a message being mirrored onto the wrong chain.
+    function test_revertsIfEnvelopeDestinationIsNotThisChain() public {
+        _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
+
+        // Origin matches the claim; only the destination is foreign. The Base
+        // `_tx` helper hardcodes the CORRECT destination, so build it by hand.
+        Transaction memory transaction = Transaction({
+            nonce: 1,
+            origin: address(this),
+            controller: address(this),
+            originChainId: CHAIN_ID,
+            destinationChainId: block.chainid + 1,
+            message: _emptyActionsPayload()
+        });
+
+        vm.expectRevert(Errors.INCORRECT_CHAIN_MISMATCH.selector);
+        vm.prank(address(adapterA));
+        controller.receiveMessage(1, TransactionLib.encode(transaction), CHAIN_ID);
+    }
+
+    /// @dev A rejected mismatching envelope must leave NO record behind: its
+    ///      txId stays `None`, so a later legitimate delivery of the same
+    ///      envelope (through the right lane) is not blocked.
+    function test_chainMismatchLeavesNoTransactionRecord() public {
+        _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
+        _configureLane(OTHER_CHAIN_ID, address(adapterB), remoteAdapterB);
+
+        bytes memory encodedTx = _encodedEmptyTx(1, OTHER_CHAIN_ID);
+        bytes32 txId = _txId(1, OTHER_CHAIN_ID, _emptyActionsPayload());
+
+        vm.expectRevert(Errors.INCORRECT_CHAIN_MISMATCH.selector);
+        vm.prank(address(adapterA));
+        controller.receiveMessage(1, encodedTx, CHAIN_ID);
+
+        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.None));
+
+        // The same envelope through the RIGHT lane still delivers.
+        vm.prank(address(adapterB));
+        controller.receiveMessage(1, encodedTx, OTHER_CHAIN_ID);
+        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Executed));
+    }
+
     function test_succeedsForRegisteredLocalAdapter() public {
         _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
 
@@ -39,10 +104,6 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
 
         assertEq(txId, _txId(1, CHAIN_ID, _emptyActionsPayload()));
     }
-
-    // -------------------------------------------------------------------------
-    // Identity / dedup.
-    // -------------------------------------------------------------------------
 
     function test_revertsIfMessageAlreadyDeliveredOrExecuted() public {
         _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
@@ -65,12 +126,6 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
         controller.receiveMessage(8, encodedTx, CHAIN_ID);
     }
 
-    /// @dev The nonce is what makes each delivery a distinct message. Deliver
-    ///      an envelope, then deliver a SECOND envelope identical in every
-    ///      field except the nonce: it must succeed (a new txId), not be
-    ///      rejected as an already-delivered duplicate. Both executions are
-    ///      observed on-chain so "succeeds" means the action actually ran
-    ///      twice, not merely that the second call didn't revert.
     function test_sameEnvelopeWithNewNonceSucceeds() public {
         _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
 
@@ -110,10 +165,85 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
         assertEq(counter.count(), 2);
     }
 
-    // -------------------------------------------------------------------------
-    // Defensive capture (a failed/malformed inner payload is stored for retry
-    // rather than reverting the bridge delivery).
-    // -------------------------------------------------------------------------
+    /// @dev An adapter registered for chain A may not deliver messages
+    ///      claiming chain B: `onlyLocalAdapter` is keyed by the CLAIMED
+    ///      origin, so being registered somewhere is not being registered
+    ///      everywhere.
+    function test_revertsForAdapterClaimingAForeignLane() public {
+        _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.CALLER_NOT_LOCAL_ADAPTER.selector, address(adapterA)));
+        vm.prank(address(adapterA));
+        controller.receiveMessage(1, _encodedEmptyTx(1, OTHER_CHAIN_ID), OTHER_CHAIN_ID);
+    }
+
+    function test_emitsMessageReceivedWithFullPayloadOnSuccess() public {
+        _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
+
+        uint256 messageId = 42;
+        bytes memory encodedTx = _encodedEmptyTx(1, CHAIN_ID);
+        bytes32 expectedTxId = _txId(1, CHAIN_ID, _emptyActionsPayload());
+
+        vm.expectEmit(true, true, true, true, address(controller));
+        emit MessageReceived(CHAIN_ID, messageId, expectedTxId, encodedTx);
+
+        vm.prank(address(adapterA));
+        controller.receiveMessage(messageId, encodedTx, CHAIN_ID);
+    }
+
+    /// @dev `bridgedAt` is stamped on BOTH branches: it records arrival, not
+    ///      execution success, because the retry cutoff compares against it.
+    function test_stampsBridgedAtOnSuccessAndFailureAlike() public {
+        _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
+        vm.warp(123_456);
+
+        // Success branch.
+        vm.prank(address(adapterA));
+        bytes32 okTxId = controller.receiveMessage(1, _encodedEmptyTx(1, CHAIN_ID), CHAIN_ID);
+        assertEq(controller.getTransaction(okTxId).bridgedAt, uint120(123_456));
+
+        // Failure branch.
+        Action[] memory actions = new Action[](1);
+        actions[0] = Action({ to: address(actionTarget), value: 0, data: abi.encodeCall(ActionExecute.fail, ()) });
+        bytes memory message = abi.encode(actions);
+        vm.prank(address(adapterA));
+        bytes32 failedTxId = controller.receiveMessage(2, _encodedTx(2, CHAIN_ID, message), CHAIN_ID);
+        assertEq(controller.getTransaction(failedTxId).bridgedAt, uint120(123_456));
+    }
+
+    function test_revertsOnUndecodableOuterEnvelope() public {
+        _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
+
+        vm.expectRevert();
+        vm.prank(address(adapterA));
+        controller.receiveMessage(1, hex"01", CHAIN_ID);
+    }
+
+    function test_reentrantRedeliveryDuringExecutionIsRejected() public {
+        ReentrantAdapterMock reentrantAdapter = new ReentrantAdapterMock(address(controller));
+        _configureLane(CHAIN_ID, address(reentrantAdapter), remoteAdapterA);
+
+        Action[] memory actions = new Action[](1);
+        actions[0] =
+            Action({ to: address(reentrantAdapter), value: 0, data: abi.encodeCall(ReentrantAdapterMock.reenter, ()) });
+        bytes memory message = abi.encode(actions);
+        bytes memory encodedTx = _encodedTx(80, CHAIN_ID, message);
+        bytes32 txId = _txId(80, CHAIN_ID, message);
+
+        reentrantAdapter.prime(encodedTx, CHAIN_ID);
+
+        vm.prank(address(reentrantAdapter));
+        controller.receiveMessage(80, encodedTx, CHAIN_ID);
+
+        assertFalse(reentrantAdapter.reentrySucceeded(), "the reentrant redelivery must not have executed");
+        assertEq(
+            reentrantAdapter.reentryRevertData(),
+            abi.encodeWithSelector(Errors.MESSAGE_ALREADY_DELIVERED_OR_EXECUTED.selector, txId),
+            "the inner delivery must have hit the dedup guard"
+        );
+        // The outer delivery itself completed normally.
+        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Executed));
+    }
 
     function test_capturesRevertingPayloadInsteadOfReverting() public {
         _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
@@ -141,14 +271,19 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
         assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Delivered));
     }
 
+    function test_acceptsPlainNativeTransfer() public {
+        vm.deal(alice, 1 ether);
+
+        vm.prank(alice);
+        (bool ok,) = address(controller).call{ value: 1 ether }("");
+
+        assertTrue(ok, "a plain empty-calldata transfer must be accepted");
+        assertEq(address(controller).balance, 1 ether);
+    }
+
     function test_capturesMalformedInnerPayloadInsteadOfReverting() public {
         _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
 
-        // A WELL-FORMED envelope whose inner `message` is not a valid
-        // ABI-encoding of `Action[]`. The envelope decode succeeds (so
-        // `receiveMessage` does not revert on the outer decode); the inner
-        // `abi.decode(message, (Action[]))` inside `executeActions` fails and
-        // is captured via try/catch.
         bytes memory garbageMessage = hex"deadbeef";
         bytes memory encodedTx = _encodedTx(56, CHAIN_ID, garbageMessage);
 
@@ -166,16 +301,5 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
         bytes32 txId = controller.receiveMessage(messageId, encodedTx, CHAIN_ID); // must NOT revert
         assertEq(txId, expectedTxId);
         assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Delivered));
-    }
-}
-
-/// @dev Minimal target with observable, readable state, used to prove an
-///      action actually executed (and how many times) rather than inferring
-///      success from the absence of a revert.
-contract CounterTarget {
-    uint256 public count;
-
-    function increment() external {
-        count += 1;
     }
 }

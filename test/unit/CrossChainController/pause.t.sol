@@ -103,7 +103,7 @@ contract CrossChainControllerPauseTest is CrossChainControllerBase {
     }
 
     // -------------------------------------------------------------------------
-    // The four message paths are blocked while paused.
+    // The three message paths are blocked while paused.
     // -------------------------------------------------------------------------
 
     function test_forwardMessageRevertsWhenPaused() public {

@@ -108,6 +108,68 @@ contract CrossChainControllerUpdateConfigTest is CrossChainControllerBase {
         controller.updateConfig(chainIds, configs);
     }
 
+    /// @dev The loop is only ever exercised with one element elsewhere; a
+    ///      batch must configure every lane and emit one event per element.
+    function test_batchConfiguresSeveralLanesAndEmitsPerElement() public {
+        uint256[] memory chainIds = new uint256[](2);
+        chainIds[0] = CHAIN_ID;
+        chainIds[1] = OTHER_CHAIN_ID;
+        CrossChainController.ChainConfig[] memory configs = new CrossChainController.ChainConfig[](2);
+        configs[0] = _lane(address(adapterA), remoteAdapterA);
+        configs[1] = _lane(address(adapterB), remoteAdapterB);
+
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit ConfigUpdated(CHAIN_ID, address(adapterA), remoteAdapterA);
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit ConfigUpdated(OTHER_CHAIN_ID, address(adapterB), remoteAdapterB);
+
+        vm.prank(alice);
+        controller.updateConfig(chainIds, configs);
+
+        (address localA,) = controller.chainToAdapter(CHAIN_ID);
+        (address localB,) = controller.chainToAdapter(OTHER_CHAIN_ID);
+        assertEq(localA, address(adapterA));
+        assertEq(localB, address(adapterB));
+    }
+
+    /// @dev A batch is atomic: if a later element is invalid, earlier valid
+    ///      elements must NOT survive -- no partially applied config.
+    function test_batchWithOneInvalidElementRevertsEntirely() public {
+        uint256[] memory chainIds = new uint256[](2);
+        chainIds[0] = CHAIN_ID; // valid
+        chainIds[1] = 0; // invalid
+        CrossChainController.ChainConfig[] memory configs = new CrossChainController.ChainConfig[](2);
+        configs[0] = _lane(address(adapterA), remoteAdapterA);
+        configs[1] = _lane(address(adapterB), remoteAdapterB);
+
+        vm.expectRevert(Errors.INVALID_CHAIN_ID.selector);
+        vm.prank(alice);
+        controller.updateConfig(chainIds, configs);
+
+        (address local,) = controller.chainToAdapter(CHAIN_ID);
+        assertEq(local, address(0), "the valid first element must have been rolled back");
+    }
+
+    /// @dev Clearing a lane emits an all-zero `ConfigUpdated`, so indexers see
+    ///      the de-registration too.
+    function test_clearingLaneEmitsAllZeroConfigUpdated() public {
+        _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
+
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit ConfigUpdated(CHAIN_ID, address(0), address(0));
+
+        _configureLane(CHAIN_ID, address(0), address(0));
+    }
+
+    /// @dev Pins a getter footgun rather than a feature: for an UNCONFIGURED
+    ///      chain the stored `localAdapter` is zero, so asking whether
+    ///      `address(0)` "is registered" returns true. Harmless in practice
+    ///      (`msg.sender` can never be zero on the receive path), but callers
+    ///      of the getter must not treat `true` as proof of a configured lane.
+    function test_isRegisteredLocalAdapterReturnsTrueForZeroAddressOnUnconfiguredChain() public view {
+        assertTrue(controller.isRegisteredLocalAdapter(address(0), 123_456));
+    }
+
     // -------------------------------------------------------------------------
     // Adapter rotation / per-lane authorization.
     // -------------------------------------------------------------------------

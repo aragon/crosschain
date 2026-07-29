@@ -33,17 +33,19 @@ contract CrossChainControllerSetup is PluginUpgradeableSetup {
         override
         returns (address plugin, PreparedSetupData memory preparedSetupData)
     {
-        (address executor, address guardian) = decodeInstallationParameters(_data);
+        (address executor, address guardian, uint256 minFailedMessageGas) = decodeInstallationParameters(_data);
 
         // No executor requested: deploy a dedicated, owner-gated one.
         // ownership is handed to the crosschain controller plugin.
         bool deployedExecutor = executor == address(0);
         if (deployedExecutor) executor = address(new Executor());
 
-        plugin = IMPLEMENTATION.deployUUPSProxy(abi.encodeCall(CrossChainController.initialize, (IDAO(_dao), executor)));
+        plugin = IMPLEMENTATION.deployUUPSProxy(
+            abi.encodeCall(CrossChainController.initialize, (IDAO(_dao), executor, minFailedMessageGas))
+        );
 
         // Only the plugin may execute inbound payloads on this executor.
-        if (deployedExecutor) Executor(executor).transferOwnership(plugin);
+        if (deployedExecutor) Executor(payable(executor)).transferOwnership(plugin);
 
         preparedSetupData.permissions =
             _getPermissions(_dao, plugin, guardian, executor == _dao, PermissionLib.Operation.Grant);
@@ -83,13 +85,24 @@ contract CrossChainControllerSetup is PluginUpgradeableSetup {
     }
 
     /// @notice Encodes the given installation parameters into a byte array
-    function encodeInstallationParameters(address executor, address guardian) external pure returns (bytes memory) {
-        return abi.encode(executor, guardian);
+    /// @param minFailedMessageGas Gas the controller withholds so a failed
+    ///        inbound message can always be recorded as `Delivered`. 45000 is a
+    ///        good enough value; see `CrossChainController.initialize`.
+    function encodeInstallationParameters(address executor, address guardian, uint256 minFailedMessageGas)
+        external
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(executor, guardian, minFailedMessageGas);
     }
 
     /// @notice Decodes the given byte array into the original installation parameters.
-    function decodeInstallationParameters(bytes memory _data) public pure returns (address executor, address guardian) {
-        return abi.decode(_data, (address, address));
+    function decodeInstallationParameters(bytes memory _data)
+        public
+        pure
+        returns (address executor, address guardian, uint256 minFailedMessageGas)
+    {
+        return abi.decode(_data, (address, address, uint256));
     }
 
     /// @notice Builds the plugin's full permission set for `_op`.

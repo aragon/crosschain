@@ -9,9 +9,14 @@ interface ICrossChainControllerEvents {
     event ConfigUpdated(uint256 indexed chainId, address localAdapter, address remoteAdapter);
 
     /// @notice Emitted when the executor is updated where message will be routed to.
-    /// @param oldExecutor The previous executor; zero on the initial set.
+    /// @param oldExecutor The previous executor;
     /// @param newExecutor The executor now in use.
     event ExecutorUpdated(address indexed oldExecutor, address indexed newExecutor);
+
+    /// @notice Emitted when the failed-message gas reserve is updated.
+    /// @param oldMinFailedMessageGas The previous reserve;
+    /// @param newMinFailedMessageGas The reserve now in use.
+    event MinFailedMessageGasUpdated(uint256 oldMinFailedMessageGas, uint256 newMinFailedMessageGas);
 
     /// @notice Emitted when a message was handed to the local adapter.
     event MessageForwarded(

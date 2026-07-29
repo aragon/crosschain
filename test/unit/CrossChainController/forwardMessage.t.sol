@@ -35,9 +35,6 @@ contract CrossChainControllerForwardMessageTest is CrossChainControllerBase {
         controller.forwardMessage(CHAIN_ID, GAS_LIMIT, _emptyActionsPayload());
     }
 
-    /// @dev A "successful" delegatecall that returns fewer than 64 bytes cannot
-    ///      be a valid `(bytes32 messageId, uint256 fee)` pair. `forwardMessage`
-    ///      must fail loudly here too, not `abi.decode` garbage.
     function test_revertsWithMessageSendFailed_whenAdapterReturnsMalformedData() public {
         ShortReturnAdapterStub badAdapter = new ShortReturnAdapterStub();
         _configureLane(CHAIN_ID, address(badAdapter), remoteAdapterA);
@@ -69,10 +66,6 @@ contract CrossChainControllerForwardMessageTest is CrossChainControllerBase {
 
         bytes memory message = abi.encode("hello");
 
-        // `forwardMessage` stamps nonce = ++_currentTxNonce (1 on first send),
-        // origin = msg.sender (alice), controller = address(this) (the
-        // controller), originChainId = block.chainid, destinationChainId =
-        // CHAIN_ID. The txId is that envelope's id.
         Transaction memory expectedTx = Transaction({
             nonce: 1,
             origin: alice,
@@ -193,7 +186,6 @@ contract CrossChainControllerForwardMessageTest is CrossChainControllerBase {
 
         vm.prank(alice);
         bytes32 txId = controller.forwardMessage(CHAIN_ID, GAS_LIMIT, message);
-        // Sanity: the send actually happened, this isn't vacuously true.
         assertEq(txId, expectedTxId);
 
         bytes32[] memory valuesAfter = _loadAll(slots);
@@ -233,11 +225,6 @@ contract CrossChainControllerForwardMessageTest is CrossChainControllerBase {
 
         bytes memory message = _emptyActionsPayload();
 
-        // `forwardMessage` now returns the txId; the adapter's messageId is
-        // surfaced only via the `MessageForwarded` event. Pin messageIdX there
-        // (indexed) to prove adapterX's immutable messageId resolved -- NOT
-        // adapterY's (222) or zero. `checkData` is false so only the indexed
-        // topics (incl. messageId) are matched.
         bytes32 expectedTxId = TransactionLib.id(
             Transaction({
                 nonce: 1,
@@ -256,7 +243,6 @@ contract CrossChainControllerForwardMessageTest is CrossChainControllerBase {
         bytes32 txId = controller.forwardMessage(CHAIN_ID, GAS_LIMIT, message);
 
         assertEq(txId, expectedTxId);
-        assertTrue(messageIdX != messageIdY); // guards the test's own premise
 
         assertEq(sinkX.balance, 1 ether);
         assertEq(address(controller).balance, 0);

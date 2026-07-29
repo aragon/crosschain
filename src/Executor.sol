@@ -18,11 +18,7 @@ contract Executor is CommonsExecutor, Ownable {
     /// @inheritdoc CommonsExecutor
     /// @dev Restricted to the owner; the rest of the behaviour (bounds check,
     ///      failure map, reentrancy guard, `Executed` event) is unchanged.
-    function execute(
-        bytes32 _callId,
-        Action[] memory _actions,
-        uint256 _allowFailureMap
-    )
+    function execute(bytes32 _callId, Action[] memory _actions, uint256 _allowFailureMap)
         public
         virtual
         override
@@ -31,4 +27,8 @@ contract Executor is CommonsExecutor, Ownable {
     {
         return super.execute(_callId, _actions, _allowFailureMap);
     }
+
+    // If this is topped up, even if `Action[]` contains value > 0,
+    // it can execute actions and forward value.
+    receive() external payable { }
 }

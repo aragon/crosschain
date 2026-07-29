@@ -7,13 +7,10 @@ import { Errors } from "@src/lib/Errors.sol";
 import { Action } from "@aragon/osx-commons-contracts/src/executors/IExecutor.sol";
 import { DaoUnauthorized } from "@aragon/osx-commons-contracts/src/permission/auth/auth.sol";
 import { CrossChainControllerDAOMock } from "@mocks/CrossChainControllerDAOMock.sol";
+import { CounterTarget } from "@mocks/CounterTarget.sol";
 import { IDAO } from "@aragon/osx-commons-contracts/src/dao/IDAO.sol";
 
 contract CrossChainControllerUpdateExecutorTest is CrossChainControllerBase {
-    // -------------------------------------------------------------------------
-    // Initial state.
-    // -------------------------------------------------------------------------
-
     /// @dev The fixture initializes the controller with the DAO as executor.
     function test_initializeSetsExecutor() public view {
         assertEq(controller.executor(), address(daoMock));
@@ -35,22 +32,19 @@ contract CrossChainControllerUpdateExecutorTest is CrossChainControllerBase {
     /// @dev The proxy is initialized by the fixture; a second call must revert.
     function test_initializeRevertsOnSecondCall() public {
         vm.expectRevert("Initializable: contract is already initialized");
-        controller.initialize(IDAO(address(daoMock)), address(daoMock));
+        controller.initialize(IDAO(address(daoMock)), address(daoMock), MIN_FAILED_MESSAGE_GAS);
     }
 
     // -------------------------------------------------------------------------
     // Validation.
     // -------------------------------------------------------------------------
 
-    /// @dev `address(0)` is codeless, so it reverts via the code-length check.
     function test_revertsOnZeroExecutor() public {
         vm.expectRevert(abi.encodeWithSelector(Errors.HAS_NO_CODE.selector, address(0)));
         vm.prank(alice);
         controller.updateExecutor(address(0));
     }
 
-    /// @dev A codeless executor would make `execute` succeed silently, so it
-    ///      must be rejected at set time rather than stranding messages later.
     function test_revertsOnCodelessExecutor() public {
         address eoa = makeAddr("eoaExecutor");
 
@@ -61,10 +55,6 @@ contract CrossChainControllerUpdateExecutorTest is CrossChainControllerBase {
         // The previous executor is untouched by the failed update.
         assertEq(controller.executor(), address(daoMock));
     }
-
-    // -------------------------------------------------------------------------
-    // Auth.
-    // -------------------------------------------------------------------------
 
     function test_revertsIfCallerUnauthorized() public {
         CrossChainControllerDAOMock newExecutor = new CrossChainControllerDAOMock();
@@ -94,8 +84,6 @@ contract CrossChainControllerUpdateExecutorTest is CrossChainControllerBase {
         assertEq(controller.executor(), address(newExecutor));
     }
 
-    /// @dev Repointing must remain possible during an incident, so it is NOT
-    ///      gated by `whenNotPaused` -- mirroring `updateConfig`.
     function test_stillWorksWhilePaused() public {
         CrossChainControllerDAOMock newExecutor = new CrossChainControllerDAOMock();
 
@@ -135,15 +123,5 @@ contract CrossChainControllerUpdateExecutorTest is CrossChainControllerBase {
 
         // Ran through the new executor.
         assertEq(counter.count(), 1);
-    }
-}
-
-/// @notice Minimal target that counts calls, to observe that execution ran.
-/// @dev DO NOT USE IN PRODUCTION! Test-only.
-contract CounterTarget {
-    uint256 public count;
-
-    function increment() external {
-        count += 1;
     }
 }
