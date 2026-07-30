@@ -36,8 +36,7 @@ enum TransactionState {
 ///      costs no extra `SSTORE` on the receive path.
 /// @param state The delivery/execution state of the message.
 /// @param bridgedAt The `block.timestamp` at which the message was delivered.
-///        `0` for a txId that was never delivered. Compared against the origin
-///        chain's retry cutoff to decide whether a retry is still allowed.
+///        `0` for a txId that was never delivered.
 struct TransactionRecord {
     TransactionState state;
     uint120 bridgedAt;

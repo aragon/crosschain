@@ -118,15 +118,6 @@ library Errors {
     ///         the chain sender intended to send.
     error INCORRECT_CHAIN_MISMATCH();
 
-    /// @notice Thrown by `retryMessage` when the message arrived at or before
-    ///         its origin chain's retry cutoff, i.e. it belongs to a backlog
-    ///         that has since been blocked.
-    error MESSAGE_PREDATES_RETRY_CUTOFF(bytes32 txId, uint120 bridgedAt, uint120 cutoff);
-
-    /// @notice Thrown when a retry cutoff is not strictly greater than the
-    ///         current one, or is set in the future.
-    error RETRY_CUTOFF_INVALID(uint256 originChainId, uint120 currentCutoff, uint120 newCutoff);
-
     /// @notice Thrown when a delivery does not carry enough gas to both attempt
     ///         the payload and reserve what the failure path needs to record it.
     /// @dev Reverting leaves the message in the bridge's failed state, where it

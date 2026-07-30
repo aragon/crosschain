@@ -33,18 +33,6 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     /// @notice txId -> stored message: its state and when it was delivered.
     mapping(bytes32 => TransactionRecord) private _transactions;
 
-    /// @notice standard origin chain id -> the delivery timestamp at or before
-    ///         which that chain's pending messages can no longer be retried.
-    /// @dev A delivered-but-failed message can only be retried if it arrived
-    ///      strictly after its origin chain's cutoff (`bridgedAt > cutoff`). Raising the cutoff blocks that
-    ///      chain's whole pending backlog in one call, instead of cancelling
-    ///      each message individually.
-    ///
-    ///      Only affects the backlog. Messages still in flight are stopped by
-    ///      pausing or by repointing the chain's local adapter, both of which
-    ///      reject the delivery before it is ever recorded.
-    mapping(uint256 => uint120) internal _retryCutoffs;
-
     /// @notice standard chain id -> adapter configuration.
     mapping(uint256 => ChainConfig) public chainToAdapter;
 
@@ -145,30 +133,6 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
 
             emit ConfigUpdated(chainId, newConfig.localAdapter, newConfig.remoteAdapter);
         }
-    }
-
-    /// @notice Blocks every message from a chain that arrived at or before
-    ///         `_cutoff` from being retried.
-    /// @dev Does in one call what `cancelMessage` does one message at a time.
-    /// @param _originChainId The standard chain id whose delivered messages are
-    ///        blocked.
-    /// @param _cutoff The delivery timestamp at or before which messages from
-    ///        `_originChainId` can no longer be retried.
-    function updateRetryCutoff(uint256 _originChainId, uint120 _cutoff)
-        public
-        virtual
-        auth(Permissions.MANAGE_CONTROLLER_CONFIG_PERMISSION_ID)
-    {
-        if (_originChainId == 0) revert Errors.INVALID_CHAIN_ID();
-
-        uint120 currentCutoff = _retryCutoffs[_originChainId];
-        if (_cutoff <= currentCutoff || _cutoff > block.timestamp) {
-            revert Errors.RETRY_CUTOFF_INVALID(_originChainId, currentCutoff, _cutoff);
-        }
-
-        _retryCutoffs[_originChainId] = _cutoff;
-
-        emit RetryCutoffUpdated(_originChainId, currentCutoff, _cutoff);
     }
 
     /// @notice Updates the gas withheld for recording a failed message.
@@ -341,14 +305,6 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
             revert Errors.MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS(txId);
         }
 
-        // `originChainId` is covered by `txId` (the hash commits to every
-        // field), so a retrier cannot name a different chain to dodge that
-        // chain's cutoff.
-        uint120 cutoff = _retryCutoffs[transaction.originChainId];
-        if (record.bridgedAt <= cutoff) {
-            revert Errors.MESSAGE_PREDATES_RETRY_CUTOFF(txId, record.bridgedAt, cutoff);
-        }
-
         record.state = TransactionState.Executed;
 
         this.executeActions(txId, transaction.message);
@@ -433,14 +389,6 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
         return chainToAdapter[_chainId].localAdapter == _adapter;
     }
 
-    /// @notice The delivery timestamp at or before which a chain's messages can
-    ///         no longer be retried.
-    /// @param _originChainId The standard chain id.
-    /// @return The cutoff, or `0` if none was ever set.
-    function retryCutoff(uint256 _originChainId) public view virtual returns (uint120) {
-        return _retryCutoffs[_originChainId];
-    }
-
     /// @notice Returns everything stored about a transaction.
     /// @param _txId The tx id.
     /// @return The record; all-zero for a txId that was never delivered.
@@ -522,5 +470,5 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
 
     /// @notice This empty reserved space is put in place to allow future versions to add
     ///         new variables without shifting down storage in the inheritance chain.
-    uint256[44] private __gap;
+    uint256[45] private __gap;
 }

@@ -46,13 +46,6 @@ interface ICrossChainControllerEvents {
     /// @notice Emitted when a delivered-but-failed message was cancelled.
     event MessageCancelled(bytes32 indexed txId);
 
-    /// @notice Emitted when a chain's retry cutoff is raised, blocking every
-    ///         message from that chain that arrived at or before the new value.
-    /// @param originChainId The standard chain id whose backlog was blocked.
-    /// @param oldCutoff The cutoff being replaced; `0` if none was ever set.
-    /// @param newCutoff The new cutoff. Always greater than `oldCutoff`.
-    event RetryCutoffUpdated(uint256 indexed originChainId, uint120 oldCutoff, uint120 newCutoff);
-
     /// @notice Emitted when fee assets are moved out of the contract.
     event Swept(address indexed token, address indexed to, uint256 amount);
 }

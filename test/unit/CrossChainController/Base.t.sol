@@ -201,15 +201,13 @@ abstract contract CrossChainControllerBase is Test, ICrossChainControllerEvents 
     // vacuously.
     //
     // slot 351 = `_currentTxNonce`, 352 = `_transactions`,
-    // 353 = `_retryCutoffs`, 354 = `chainToAdapter`,
-    // 355 = `executor` (packed).
+    // 353 = `chainToAdapter`, 354 = `executor` (packed).
     // -------------------------------------------------------------------------
 
     uint256 internal constant NONCE_SLOT = 351;
     uint256 internal constant TRANSACTION_STATE_SLOT = 352;
-    uint256 internal constant RETRY_CUTOFFS_SLOT = 353;
-    uint256 internal constant CHAIN_TO_ADAPTER_SLOT = 354;
-    uint256 internal constant EXECUTOR_SLOT = 355;
+    uint256 internal constant CHAIN_TO_ADAPTER_SLOT = 353;
+    uint256 internal constant EXECUTOR_SLOT = 354;
 
     /// @dev `chainToAdapter[_chainId]` occupies TWO words: word 0 holds
     ///      `localAdapter`; word 1 holds `remoteAdapter`. This returns word 0's

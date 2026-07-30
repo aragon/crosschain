@@ -58,11 +58,6 @@ contract CrossChainControllerUpgradeTest is CrossChainControllerBase {
         vm.prank(address(adapterA));
         controller.receiveMessage(9, _encodedTx(9, CHAIN_ID, message), CHAIN_ID);
 
-        // 3. A retry cutoff.
-        vm.warp(1_000_000);
-        vm.prank(alice);
-        controller.updateRetryCutoff(OTHER_CHAIN_ID, uint120(999_999));
-
         // Upgrade.
         daoMock.setHasPermission(address(controller), alice, Permissions.UPGRADE_PLUGIN_PERMISSION_ID, true);
         vm.prank(alice);
@@ -73,7 +68,6 @@ contract CrossChainControllerUpgradeTest is CrossChainControllerBase {
         assertEq(localAdapter, address(adapterA), "lane config lost in upgrade");
         assertEq(remoteAdapter, remoteAdapterA);
         assertEq(controller.executor(), address(daoMock), "executor lost in upgrade");
-        assertEq(controller.retryCutoff(OTHER_CHAIN_ID), uint120(999_999), "retry cutoff lost in upgrade");
         assertEq(
             uint256(controller.getTransaction(deliveredTxId).state),
             uint256(TransactionState.Delivered),
