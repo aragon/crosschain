@@ -26,6 +26,28 @@ contract CrossChainControllerDAOMock is IDAO, IExecutor {
     ///         any action, regardless of the granted permissions.
     bool public executeReverts;
 
+    /// @notice Set while `execute` is running, so a re-entrant call can be
+    ///         rejected. Mirrors the commons `Executor`'s `nonReentrant`, which
+    ///         is the behaviour this mock stands in for on the `executor = dao`
+    ///         path: without it the mock would accept re-entry the real
+    ///         execution target refuses, and a test could pass against a
+    ///         reachability the production system does not have.
+    bool private _entered;
+
+    /// @notice Thrown when `execute` is re-entered.
+    /// @dev Named after the commons `Executor`'s error so tests can expect the
+    ///      same failure on either execution target.
+    error ReentrantCall();
+
+    /// @dev Reverts on re-entry rather than silently allowing it.
+    modifier nonReentrant() {
+        if (_entered) revert ReentrantCall();
+
+        _entered = true;
+        _;
+        _entered = false;
+    }
+
     function setHasPermission(address _where, address _who, bytes32 _permissionId, bool _granted) external {
         permissions[_where][_who][_permissionId] = _granted;
     }
@@ -63,6 +85,7 @@ contract CrossChainControllerDAOMock is IDAO, IExecutor {
     function execute(bytes32 callId, Action[] memory _actions, uint256 allowFailureMap)
         external
         override
+        nonReentrant
         returns (bytes[] memory execResults, uint256 failureMap)
     {
         if (executeReverts) {

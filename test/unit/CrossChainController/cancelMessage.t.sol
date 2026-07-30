@@ -96,21 +96,6 @@ contract CrossChainControllerCancelMessageTest is CrossChainControllerBase {
         controller.cancelMessage(TransactionLib.encode(okTx));
     }
 
-    function test_cutoffBlockedMessageIsStillCancellable() public {
-        _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
-        vm.warp(1_000_000);
-        (Transaction memory failedTx, bytes32 txId) = _causeFailure(75);
-
-        // Cutoff at exactly `bridgedAt`: retry is blocked from here on.
-        vm.prank(alice);
-        controller.updateRetryCutoff(CHAIN_ID, uint120(1_000_000));
-
-        vm.prank(alice);
-        controller.cancelMessage(TransactionLib.encode(failedTx));
-
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Cancelled));
-    }
-
     function _causeFailure(uint256 _nonce) internal returns (Transaction memory failedTx, bytes32 txId) {
         Action[] memory actions = new Action[](1);
         actions[0] = Action({ to: address(actionTarget), value: 0, data: abi.encodeCall(ActionExecute.fail, ()) });

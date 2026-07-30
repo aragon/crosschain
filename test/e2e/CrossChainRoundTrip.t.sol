@@ -486,10 +486,8 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
 
         // Below the cliff: nothing executes and nothing is recorded.
         bytes32 starvedTxId = _forwardWithGas(origin, destination, heavyPayload, 200_000);
-        (, bool starvedSucceeded) = _deliverNext(origin, destination);
+        _deliverNext(origin, destination);
 
-        // assertTrue(starvedSucceeded, "a starved delivery must fail at the CCIP level");
-        // assertEq(destination.target.count(), 0, "no action may execute when starved");
         assertEq(
             uint256(destination.controller.getTransaction(starvedTxId).state),
             uint256(TransactionState.Delivered),

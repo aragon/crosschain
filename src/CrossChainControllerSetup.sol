@@ -23,6 +23,11 @@ contract CrossChainControllerSetup is PluginUpgradeableSetup {
     ///         build, so there is no update path INTO it.
     uint16 internal constant THIS_BUILD = 1;
 
+    /// @notice The OSx `PermissionManager` sentinel meaning "any caller".
+    ///         `RETRY_MESSAGE_PERMISSION` is granted to it; see
+    ///         `_getPermissions` for why it must not go to the DAO.
+    address internal constant ANY_ADDR = address(type(uint160).max);
+
     /// @notice Sets the implementation the proxies point at.
     /// @param _implementation An existing `CrossChainController` implementation
     constructor(address _implementation) PluginUpgradeableSetup(_implementation) { }
@@ -125,10 +130,9 @@ contract CrossChainControllerSetup is PluginUpgradeableSetup {
 
         permissions = new PermissionLib.MultiTargetPermission[](count);
 
-        bytes32[8] memory pluginPermissionIds = [
+        bytes32[7] memory daoPermissionIds = [
             Permissions.FORWARD_MESSAGE_PERMISSION_ID,
             Permissions.MANAGE_CONTROLLER_CONFIG_PERMISSION_ID,
-            Permissions.RETRY_MESSAGE_PERMISSION_ID,
             Permissions.CANCEL_MESSAGE_PERMISSION_ID,
             Permissions.SWEEP_PERMISSION_ID,
             Permissions.PAUSE_PERMISSION_ID,
@@ -136,17 +140,32 @@ contract CrossChainControllerSetup is PluginUpgradeableSetup {
             Permissions.UPGRADE_PLUGIN_PERMISSION_ID
         ];
 
-        for (uint256 i = 0; i < pluginPermissionIds.length; i++) {
+        for (uint256 i = 0; i < daoPermissionIds.length; i++) {
             permissions[i] = PermissionLib.MultiTargetPermission({
                 operation: _op,
                 where: _plugin,
                 who: _dao,
                 condition: PermissionLib.NO_CONDITION,
-                permissionId: pluginPermissionIds[i]
+                permissionId: daoPermissionIds[i]
             });
         }
 
-        uint256 next = pluginPermissionIds.length;
+        uint256 next = daoPermissionIds.length;
+
+        // RETRY_MESSAGE_PERMISSION goes to ANY_ADDR, never to the DAO or the
+        // configured executor: `retryMessage` calls back into the executor, so
+        // a retry initiated FROM the executor (or from the DAO when
+        // `executor = dao`) re-enters `execute` and the executor's reentrancy
+        // guard makes every such retry revert. The payload was already
+        // authenticated on delivery and only `Delivered` messages can be
+        // retried, so leaving it open is safe.
+        permissions[next++] = PermissionLib.MultiTargetPermission({
+            operation: _op,
+            where: _plugin,
+            who: ANY_ADDR,
+            condition: PermissionLib.NO_CONDITION,
+            permissionId: Permissions.RETRY_MESSAGE_PERMISSION_ID
+        });
 
         if (hasGuardian) {
             // Pause only, never unpause: a guardian is trusted to freeze the

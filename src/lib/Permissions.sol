@@ -7,15 +7,19 @@ pragma solidity ^0.8.8;
 /// @custom:security-contact sirt@aragon.org
 library Permissions {
     /// @notice Permission to change how the controller is wired: its per-chain
-    ///         lane config, its executor, and its per-chain retry cutoffs.
+    ///         lane config and its executor.
     bytes32 internal constant MANAGE_CONTROLLER_CONFIG_PERMISSION_ID = keccak256("MANAGE_CONTROLLER_CONFIG_PERMISSION");
 
     /// @notice Permission to forward a message to a remote chain.
     bytes32 internal constant FORWARD_MESSAGE_PERMISSION_ID = keccak256("FORWARD_MESSAGE_PERMISSION");
 
     /// @notice Permission to retry a message whose execution reverted on
-    ///         arrival. Intended for the DAO and/or an ops multisig, since the
-    ///         payload itself was already authenticated by the bridge.
+    ///         arrival. The setup grants it to ANY_ADDR: the payload was
+    ///         already authenticated by the bridge, and the holder must NEVER
+    ///         be the executor configured on the controller (nor the DAO when
+    ///         `executor = dao`) -- `retryMessage` calls back into the
+    ///         executor, so such a holder would re-enter `execute` and the
+    ///         reentrancy guard would make every retry revert.
     bytes32 internal constant RETRY_MESSAGE_PERMISSION_ID = keccak256("RETRY_MESSAGE_PERMISSION");
 
     /// @notice Permission to cancel a delivered-but-failed message so it can

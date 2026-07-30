@@ -192,7 +192,7 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
     }
 
     /// @dev `bridgedAt` is stamped on BOTH branches: it records arrival, not
-    ///      execution success, because the retry cutoff compares against it.
+    ///      execution success.
     function test_stampsBridgedAtOnSuccessAndFailureAlike() public {
         _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
         vm.warp(123_456);

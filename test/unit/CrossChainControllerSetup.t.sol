@@ -16,10 +16,12 @@ import { CrossChainControllerDAOMock } from "@mocks/CrossChainControllerDAOMock.
 /// @title CrossChainControllerSetupTest
 /// @notice Tests the OSx plugin setup: proxy deployment, executor wiring, and
 ///         -- most importantly -- the exact permission arrays. The permission
-///         count arithmetic in `_getPermissions` (8 base, +1 guardian, +1
-///         executor-is-DAO) is hand-maintained against hand-written array
-///         indices, so these tests pin every entry.
+///         count arithmetic in `_getPermissions` (7 DAO-held + 1 ANY_ADDR
+///         retry, +1 guardian, +1 executor-is-DAO) is hand-maintained against
+///         hand-written array indices, so these tests pin every entry.
 contract CrossChainControllerSetupTest is Test {
+    /// @dev The OSx `PermissionManager` sentinel meaning "any caller".
+    address internal constant ANY_ADDR = address(type(uint160).max);
     CrossChainController internal implementation;
     CrossChainControllerSetup internal setup;
     CrossChainControllerDAOMock internal daoMock;
@@ -34,13 +36,13 @@ contract CrossChainControllerSetupTest is Test {
         guardian = makeAddr("guardian");
     }
 
-    /// @dev The 8 plugin-scoped permissions, in the exact order
-    ///      `_getPermissions` writes them.
-    function _basePermissionIds() internal pure returns (bytes32[8] memory) {
+    /// @dev The 7 DAO-held plugin-scoped permissions, in the exact order
+    ///      `_getPermissions` writes them. RETRY_MESSAGE is not here: it is
+    ///      granted to ANY_ADDR as entry [7].
+    function _daoPermissionIds() internal pure returns (bytes32[7] memory) {
         return [
             Permissions.FORWARD_MESSAGE_PERMISSION_ID,
             Permissions.MANAGE_CONTROLLER_CONFIG_PERMISSION_ID,
-            Permissions.RETRY_MESSAGE_PERMISSION_ID,
             Permissions.CANCEL_MESSAGE_PERMISSION_ID,
             Permissions.SWEEP_PERMISSION_ID,
             Permissions.PAUSE_PERMISSION_ID,
@@ -67,8 +69,11 @@ contract CrossChainControllerSetupTest is Test {
         assertEq(_permission.permissionId, _id, string.concat(_label, ": permissionId"));
     }
 
-    /// @dev Asserts entries [0..7]: Grant/Revoke on the PLUGIN for the DAO, in
-    ///      the canonical order.
+    /// @dev Asserts entries [0..7]: Grant/Revoke on the PLUGIN -- [0..6] for
+    ///      the DAO in the canonical order, [7] the ANY_ADDR retry grant.
+    ///      RETRY_MESSAGE must never be held by the DAO: the DAO can be the
+    ///      configured executor, and an executor-held retry re-enters
+    ///      `execute`.
     function _assertBasePermissions(
         PermissionLib.MultiTargetPermission[] memory _permissions,
         PermissionLib.Operation _op,
@@ -77,10 +82,14 @@ contract CrossChainControllerSetupTest is Test {
         internal
         view
     {
-        bytes32[8] memory ids = _basePermissionIds();
+        bytes32[7] memory ids = _daoPermissionIds();
         for (uint256 i = 0; i < ids.length; i++) {
             _assertPermission(_permissions[i], _op, _plugin, address(daoMock), ids[i], vm.toString(i));
         }
+
+        _assertPermission(
+            _permissions[7], _op, _plugin, ANY_ADDR, Permissions.RETRY_MESSAGE_PERMISSION_ID, "retry-any-addr"
+        );
     }
 
     // -------------------------------------------------------------------------

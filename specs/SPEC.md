@@ -51,7 +51,7 @@ its permissions matter.
 itself**. Sensitive configuration is then changed only by the L2 DAO acting directly, off
 the cross-chain path - so a compromised bridge cannot reach it.
 
-**The alternative.** If you consider bridge compromise a negligible risk, you can avoid having a dedicated `Executor`, but instead set `executor = dao` on the controller and give those sensitive permissions to the DAO. 
+**The alternative.** If you consider bridge compromise a negligible risk, you can avoid having a dedicated `Executor`, but instead set `executor = dao` on the controller and give those sensitive permissions to the DAO, which means only way you can update L2 is through cross-chain.
 
 > Note that `DAO` is still required on both chains due to the fact that `CrossChainController` is an OSx plugin.
 
@@ -79,7 +79,7 @@ flowchart TB
     ROUTER2[CCIPRouter L2]
     ADP2[CCIPAdapter L2]
     CCC2[CrossChainController]
-    DAO2["DAO L2<br/>-<br/>updateConfig<br/>pause / unpause<br/>upgradeTo<br/>cancelMessage<br/>retryMessage<br/>sweep<br/>updateExecutor<br/>updateRetryCutoff"]
+    DAO2["DAO L2<br/>-<br/>updateConfig<br/>pause / unpause<br/>upgradeTo<br/>cancelMessage<br/>retryMessage<br/>sweep<br/>updateExecutor"]
     EXEC[Executor]
   end
 
@@ -93,6 +93,53 @@ flowchart TB
   CCC2 -->|8 . execute| EXEC
   DAO2 -.->|admin| CCC2
 ```
+
+> If a dedicated `Executor` is set as the executor on the `CrossChainController`, that
+> executor must be given permission on the external contracts it is meant to call. If this
+> is no longer required, note that the `Executor`'s ownership cannot be transferred to
+> `address(0)` - which would otherwise be the clean way out, as it would mean the
+> controller can no longer call the `Executor`, hence the `Executor` can never be called,
+> hence those external contracts can never be called by the `Executor` (even if their
+> permissions still list it). To achieve the removal, either revoke the `Executor`'s
+> permissions on those external contracts, or call `updateExecutor` on the
+> `CrossChainController`. Updating the executor means the previously set `Executor` can no
+> longer be called, which means the external contracts can no longer be called by that
+> executor.
+
+### Same Chain Delivery
+
+A lane can also target the chain it lives on: the whole flow stays local and no bridge is
+involved. The controller `delegatecall`s a `SameChainAdapter`, which stores its own
+dedicated `Executor` and hands the actions straight to it.
+
+```mermaid
+%%{init: {"themeVariables": {"fontSize": "18px"}}}%%
+flowchart LR
+  DAO[DAO] -->|1 . forwardMessage| CCC[CrossChainController]
+  CCC -.->|2 . sendMessage<br/>DELEGATECALL| SCA["SameChainAdapter<br/>(stores its own Executor)"]
+  SCA -->|3 . execute| EXEC[Executor]
+  EXEC -->|4| TARGET[Final contract]
+```
+
+Since `SameChainAdapter` is called with `delegatecall` from `CrossChainController`, the
+caller on the `Executor` ends up being the `CrossChainController` (which means the OZ
+owner on the `Executor` must be set to the controller). This means that for same chain
+delivery, the external contracts on the same chain need to give permission to the
+`Executor`, not the DAO. This is safe, because the `Executor`'s owner (the only one that
+can call it) is the `CrossChainController`, which can only be called by the DAO - hence in
+the end, it is still the DAO that implicitly calls the final external contracts. Note that
+if someone else is allowed to call the controller, that someone else will implicitly have
+permissions on those external contracts.
+
+> Should you later decide to abandon this approach, it is impossible to change the owner
+> on the `Executor` from `CrossChainController` to `address(0)`: the controller has no
+> code path that calls the `Executor`'s `transferOwnership` directly, and even if the
+> `Executor` were made to call itself with `transferOwnership`, the caller would be the
+> `Executor`, not the controller. To achieve the removal, revoke all permissions on the
+> external contracts where the `Executor` was granted them, and/or on the
+> `CrossChainController` call `updateConfig` for this chain id and either clear the
+> adapters or point them at a different `SameChainAdapter` (one that uses a different
+> executor).
 
 ### Functions
 
@@ -109,13 +156,31 @@ deliberately are not, so an incident can be recovered from while the system is p
 | `quoteFee(dstChainId, gasLimit, message)` | view | Quotes the exact bytes `forwardMessage` would send, returning `(feeToken, fee, available)` - the last being this contract's current balance of that token. Use it to check funding before sending. |
 | `receiveMessage(messageId, encodedTx, originChainId)` | `onlyLocalAdapter(originChainId)` | Inbound entry point. Decodes the transaction, re-verifies both chain ids against the payload, rejects replays. Success → `Executed`; revert → `Delivered` and retryable. Never reverts on a bad payload. |
 | `executeActions(txId, payload)` | self only | Decodes `Action[]` and calls the executor. External purely so `receiveMessage` can wrap it in `try/catch`; decoding lives here so malformed payloads are captured rather than bouncing the bridge delivery. |
-| `retryMessage(encodedTx)` | `RETRY_MESSAGE_PERMISSION` | Re-runs a `Delivered` message. Does **not** catch - if it fails again the whole call reverts and the message stays `Delivered`, so it can be retried later. |
+| `retryMessage(encodedTx)` | `RETRY_MESSAGE_PERMISSION` | Re-runs a `Delivered` message. Does **not** catch - if it fails again the whole call reverts and the message stays `Delivered`, so it can be retried later. ⚠️ **This permission must never be held by the address configured as the controller's `executor`** (including the DAO when `executor = dao`) - see the warning below the table. The setup grants it to `ANY_ADDR`. |
 | `cancelMessage(encodedTx)` | `CANCEL_MESSAGE_PERMISSION` | Burns a `Delivered` message. The `txId` moves to `Cancelled` and never back to `None`, so it can never be re-delivered or retried. |
 | `updateConfig(chainIds, configs)` | `MANAGE_CONTROLLER_CONFIG_PERMISSION` | Sets or clears lanes, keyed by **remote** chain id. A lane must be fully set or fully cleared; chain id `0` is rejected as it marks "unset". All-or-nothing because the two halves serve opposite directions and a half-set lane is broken either way: `localAdapter` alone can send but authenticates nothing inbound, `remoteAdapter` alone accepts inbound but cannot send. Requiring both keeps "is this lane configured?" a single unambiguous fact. Clearing both is likewise the only clean way to retire a lane: it shuts the route down in both directions at once, so no outbound message can be sent to a chain that is no longer trusted and no inbound message from it is still accepted. |
 | `updateExecutor(executor)` | `MANAGE_CONTROLLER_CONFIG_PERMISSION` | Repoints the controller at a different execution target. Must have code. The call validates **only** that the target has code - it cannot check that the new executor actually authorizes the controller to call `execute`. Repointing to a target that does not is the easiest way to silently brick the receive path; see the executor runbook below. |
-| `updateRetryCutoff(originChainId, cutoff)` | `MANAGE_CONTROLLER_CONFIG_PERMISSION` | Blocks every `Delivered` message from `originChainId` that arrived at or before `cutoff` from ever being retried. Does in one call what `cancelMessage` does one message at a time. The cutoff must be strictly increasing and cannot be set past `block.timestamp`, so it is aimed at messages that have already arrived - it cannot pre-emptively block messages that arrive with a later timestamp. One edge exists: the blocking check is inclusive (`bridgedAt <= cutoff`), so a message delivered in the same second as a `cutoff = block.timestamp` update also falls under it, even though it arrived after the update. The error direction is conservative (a fresh failed message becomes non-retryable, and can only be blocked, never executed, by this), and the decommissioning runbook clears the lane before setting the cutoff, so no such delivery can slip in between. To stop in-flight messages, call `updateConfig` to clear the lane's adapters: with no `localAdapter` registered for that chain id, `receiveMessage` no longer authenticates the incoming call and the message is rejected on arrival. |
 | `pause()` / `unpause()` | `PAUSE_PERMISSION` / `UNPAUSE_PERMISSION` | Halts and resumes the three message paths that move messages forward: `forwardMessage`, `receiveMessage` and `retryMessage`. The two directions carry **separate permissions**: a guardian can be trusted to freeze without being trusted to reopen, so a compromised guardian key cannot unpause mid-incident while a malicious message is still pending - the setup grants the guardian `PAUSE_PERMISSION` only, and `UNPAUSE_PERMISSION` stays with the DAO. `cancelMessage` is deliberately **not** gated - pausing exists to stop bad messages from executing, and cancelling is how you stop a pending one for good. If it were gated, the only way to cancel a pending message would be to unpause first, which reopens the paths you just closed. |
 | `sweep(token, to, amount)` | `SWEEP_PERMISSION` | Moves pre-funded fee assets out, typically back to the DAO. `address(0)` means native currency. |
+
+> ⚠️ **`RETRY_MESSAGE_PERMISSION` must never be granted to the address configured as the
+> controller's `executor`** - including the DAO when `executor = dao`. `retryMessage`
+> calls back into the executor, so a retry initiated *from* the executor re-enters
+> `execute`:
+>
+> - `executor = dao`, and a DAO proposal calls `retryMessage`: the flow is
+>   `DAO.execute` → `CrossChainController.retryMessage` → `DAO.execute` - reentrancy on
+>   the DAO.
+> - A dedicated `Executor` holding the permission, triggered over the cross-chain path:
+>   `CrossChainController` → `Executor` → `CrossChainController.retryMessage` →
+>   `Executor` - reentrancy on the executor.
+>
+> The executor's reentrancy guard makes every such retry revert, so the retry path is
+> unusable for exactly the holder it was granted to. This is why the setup grants
+> `RETRY_MESSAGE_PERMISSION` to `ANY_ADDR` (anyone) rather than the DAO: the retried
+> payload was already authenticated by the bridge on delivery, and only a `Delivered`
+> (failed) message can be retried, so leaving it open is safe. If you narrow it, grant
+> it to an address that is **not** the configured executor - e.g. an ops multisig.
 
 #### `IBaseAdapter` / `BaseAdapter`
 
@@ -193,28 +258,28 @@ wiring mistake - inbound messages are then rejected with `REMOTE_NOT_TRUSTED`.
 ### Decommissioning a chain (runbook)
 
 Clearing a lane does **not** block that chain's delivered backlog. `updateConfig` and
-`updateRetryCutoff` guard two different doors, and retiring a chain requires closing
+`cancelMessage` guard two different doors, and retiring a chain requires closing
 both:
 
 - `updateConfig` (clear) guards **arrival**: with no `localAdapter` registered,
   `receiveMessage` no longer authenticates the incoming call, so both in-flight and
   future messages from that chain are rejected on delivery.
-- `updateRetryCutoff` guards the **backlog**: `retryMessage` never checks whether the
+- `cancelMessage` guards the **backlog**: `retryMessage` never checks whether the
   lane still exists, so any message from that chain already sitting in `Delivered`
-  remains retryable after the lane is cleared. Since every delivered message has
-  `bridgedAt <= block.timestamp`, a cutoff of `block.timestamp` always covers the
-  entire existing backlog in one call.
+  remains retryable after the lane is cleared, until it is cancelled.
 
 To stop trusting a chain, do both in one proposal:
 
 1. `updateConfig([chainId], [all-zero ChainConfig])` - no further messages from that
    chain arrive.
-2. `updateRetryCutoff(chainId, block.timestamp)` - nothing it already delivered can
-   ever be retried.
+2. `cancelMessage(encodedTx)` for each of that chain's `Delivered` messages -
+   nothing it already delivered can ever be retried. The backlog is expected to be
+   tiny: messages originate from L1 proposals, so there are few of them, and only
+   failed ones sit in `Delivered`.
 
-Doing only step 1 leaves the delivered backlog executable by any
-`RETRY_MESSAGE_PERMISSION` holder; doing only step 2 leaves the door open for new
-deliveries.
+Doing only step 1 leaves the delivered backlog executable by anyone (the setup grants
+`RETRY_MESSAGE_PERMISSION` to `ANY_ADDR`); doing only step 2 leaves the door open for
+new deliveries.
 
 ### Repointing the executor (runbook)
 
@@ -274,10 +339,9 @@ in this order:
 1. `updateConfig` clearing **every** configured lane (all-zero `ChainConfig` per
    chain id) - shuts the route down in both directions; inbound messages fail
    authentication on arrival. Per the decommissioning runbook above, pair each
-   cleared lane with `updateRetryCutoff(chainId, block.timestamp)`: the uninstall
-   only revokes the permissions the setup granted, so a `RETRY_MESSAGE_PERMISSION`
-   holder the DAO added separately could otherwise still execute the delivered
-   backlog.
+   cleared lane with a `cancelMessage` per `Delivered` message: `retryMessage` is
+   open to anyone (`RETRY_MESSAGE_PERMISSION` is granted to `ANY_ADDR`), so the
+   delivered backlog stays executable until it is cancelled.
 2. Optionally `pause()` - belt-and-braces freeze of the message paths; there is no
    reason to leave an abandoned controller unpaused.
 3. `sweep` of any pre-funded fee assets back to the DAO.

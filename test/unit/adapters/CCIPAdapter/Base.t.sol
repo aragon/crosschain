@@ -179,8 +179,7 @@ abstract contract CCIPAdapterBase is Test, ICrossChainControllerEvents {
     uint256 internal constant PAUSED_SLOT = 301;
     uint256 internal constant NONCE_SLOT = 351;
     uint256 internal constant TRANSACTION_STATE_SLOT = 352;
-    uint256 internal constant RETRY_CUTOFFS_SLOT = 353;
-    uint256 internal constant CHAIN_TO_ADAPTER_SLOT = 354;
+    uint256 internal constant CHAIN_TO_ADAPTER_SLOT = 353;
 
     /// @notice Pins the slot constants above to the real layout.
     /// @dev Without this, a stale constant makes the collision tests read a word
