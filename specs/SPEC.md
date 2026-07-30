@@ -17,6 +17,12 @@ On the destination chain, the arriving message is delivered to that remote adapt
 in turn forwards it to the `CrossChainController` there. The controller is therefore both
 ends of every route: the sender's entry point and the receiver's final destination.
 
+Nothing requires the destination to be a *different* chain: a lane may run from chain x to
+chain x, since `updateConfig` accepts this chain's own id and the send path never compares
+`_destinationChainId` against `block.chainid`. For such a lane, `localAdapter` and
+`remoteAdapter` must both be set to the SAME local adapter - it is both the contract the
+controller delegatecalls and the address the message is addressed to. You can refer to `mocks/SameChainAdapter.sol` for more.
+
 ### Permissions
 
 Only one adapter is configured per destination chain id at any given time, so that single
