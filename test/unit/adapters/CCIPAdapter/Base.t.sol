@@ -43,6 +43,10 @@ abstract contract CCIPAdapterBase is Test, ICrossChainControllerEvents {
     uint256 internal constant CHAIN_ETH_MAINNET = ChainIds.ETHEREUM;
     uint256 internal constant CHAIN_BASE = ChainIds.BASE;
     uint256 internal constant CHAIN_ARBITRUM_ONE = ChainIds.ARBITRUM_ONE;
+    // Sepolia's chain id: a real chain the adapter does NOT map, used to
+    // exercise the unmapped path. Deliberately not a low integer, so growing
+    // the production map can never silently turn this into a mapped chain.
+    uint256 internal constant CHAIN_SEPOLIA = 11155111;
 
     // Events come from `ICrossChainControllerEvents` (inherited), so
     // `vm.expectEmit` can `emit` them without a local redeclaration.

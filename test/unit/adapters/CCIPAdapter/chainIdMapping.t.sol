@@ -13,8 +13,8 @@ contract CCIPAdapterChainIdMappingTest is CCIPAdapterBase {
     }
 
     function test_toNativeChainId_revertsForUnmappedChain() public {
-        vm.expectRevert(abi.encodeWithSelector(Errors.UNKNOWN_CHAIN_ID.selector, uint256(999)));
-        adapter.toNativeChainId(999);
+        vm.expectRevert(abi.encodeWithSelector(Errors.UNKNOWN_CHAIN_ID.selector, CHAIN_SEPOLIA));
+        adapter.toNativeChainId(CHAIN_SEPOLIA);
     }
 
     function test_fromNativeChainId_isExactInverseOfToNativeChainId() public view {

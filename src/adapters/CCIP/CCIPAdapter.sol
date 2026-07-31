@@ -200,10 +200,12 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
             return uint64(4051577828743386545);
         } else if (_chainId == ChainIds.BNB) {
             return uint64(11344663589394136015);
-        } else if (_chainId == ChainIds.CELO) {
-            return uint64(1346049177634351622);
-        } else if (_chainId == ChainIds.SONIC) {
-            return uint64(1673871237479749969);
+        } else if (_chainId == ChainIds.OPTIMISM) {
+            return uint64(3734403246176062136);
+        } else if (_chainId == ChainIds.CRONOS) {
+            return uint64(1456215246176062136);
+        } else if (_chainId == ChainIds.HYPER_EVM) {
+            return uint64(2442541497099098535);
         } else if (_chainId == ChainIds.PLASMA) {
             return uint64(9335212494177455608);
         } else if (_chainId == ChainIds.MONAD) {
@@ -212,6 +214,14 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
             return uint64(15971525489660198786);
         } else if (_chainId == ChainIds.ARBITRUM_ONE) {
             return uint64(4949039107694359620);
+        } else if (_chainId == ChainIds.INK) {
+            return uint64(3461204551265785888);
+        } else if (_chainId == ChainIds.LINEA) {
+            return uint64(4627098889531055414);
+        } else if (_chainId == ChainIds.KATANA) {
+            return uint64(2459028469735686113);
+        } else if (_chainId == ChainIds.MEGA_ETH) {
+            return uint64(6093540873831549674);
         }
         revert Errors.UNKNOWN_CHAIN_ID(_chainId);
     }
@@ -226,10 +236,12 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
             return ChainIds.POLYGON;
         } else if (_chainId == uint64(11344663589394136015)) {
             return ChainIds.BNB;
-        } else if (_chainId == uint64(1346049177634351622)) {
-            return ChainIds.CELO;
-        } else if (_chainId == uint64(1673871237479749969)) {
-            return ChainIds.SONIC;
+        } else if (_chainId == uint64(3734403246176062136)) {
+            return ChainIds.OPTIMISM;
+        } else if (_chainId == uint64(1456215246176062136)) {
+            return ChainIds.CRONOS;
+        } else if (_chainId == uint64(2442541497099098535)) {
+            return ChainIds.HYPER_EVM;
         } else if (_chainId == uint64(9335212494177455608)) {
             return ChainIds.PLASMA;
         } else if (_chainId == uint64(8481857512324358265)) {
@@ -238,6 +250,14 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
             return ChainIds.BASE;
         } else if (_chainId == uint64(4949039107694359620)) {
             return ChainIds.ARBITRUM_ONE;
+        } else if (_chainId == uint64(3461204551265785888)) {
+            return ChainIds.INK;
+        } else if (_chainId == uint64(4627098889531055414)) {
+            return ChainIds.LINEA;
+        } else if (_chainId == uint64(2459028469735686113)) {
+            return ChainIds.KATANA;
+        } else if (_chainId == uint64(6093540873831549674)) {
+            return ChainIds.MEGA_ETH;
         }
         revert Errors.UNKNOWN_NATIVE_CHAIN_ID(_chainId);
     }
