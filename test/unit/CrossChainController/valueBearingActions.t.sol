@@ -59,12 +59,7 @@ contract CrossChainControllerValueBearingActionsTest is CrossChainControllerBase
     // Helpers.
     // -------------------------------------------------------------------------
 
-    function _configureLaneOn(
-        CrossChainController _controller,
-        uint256 _chainId,
-        address _local,
-        address _remote
-    )
+    function _configureLaneOn(CrossChainController _controller, uint256 _chainId, address _local, address _remote)
         internal
     {
         uint256[] memory chainIds = new uint256[](1);
@@ -84,11 +79,7 @@ contract CrossChainControllerValueBearingActionsTest is CrossChainControllerBase
     /// @dev Delivers `_actions` to `_controller` through the registered adapter
     ///      and returns the envelope bytes plus the txId, so a follow-up retry
     ///      or cancel can address the same message.
-    function _deliver(
-        CrossChainController _controller,
-        uint256 _nonce,
-        Action[] memory _actions
-    )
+    function _deliver(CrossChainController _controller, uint256 _nonce, Action[] memory _actions)
         internal
         returns (bytes memory encodedTx, bytes32 txId)
     {
