@@ -5,10 +5,6 @@ These suites carry a message the whole way: an origin DAO proposal calls
 destination adapter authenticates it, and the destination executor runs the
 actions.
 
-They are adapted from [aragon/osx#700](https://github.com/aragon/osx/pull/700),
-which built the same suite against `src/common/crosschain/` before this module
-was extracted into its own repository.
-
 ## Why these exist, given the unit suites
 
 The per-function suites under `test/unit/` test each side against a HAND-BUILT
@@ -35,7 +31,7 @@ makes them fail. Everything here goes through a real OSx `DAO`.
 | `Reentrancy.t.sol` | What an authenticated payload can and cannot do mid-execution; legitimate multi-hop chaining |
 | `ReplayAndIdentity.t.sol` | Transaction identity, and every way a message might be replayed where it does not belong |
 | `fork/CCIPRealRouter.t.sol` | The stack against REAL production CCIP Router bytecode on mainnet and Base |
-| `CrossChainRoundTrip.t.sol` | The original round-trip suite, against the DAO mock |
+| `CrossChainRoundTrip.t.sol` | A round trip against the DAO mock |
 
 ## Running
 

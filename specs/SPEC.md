@@ -1,13 +1,16 @@
-### Architecture
+# CrossChain Controller — Specification
+
+The intended behaviour of the `CrossChainController` plugin and its adapters.
+
+## Architecture
 
 The architecture is deliberately flexible: adapters are swappable, because the
 `CrossChainController` is the single entry point for both sending and receiving messages,
 and it is where all configuration lives. Adapters hold no routing state of their own -
 swapping in a new bridge means deploying an adapter and updating the controller's config.
 
-Routing works off a per-destination config. When the controller is asked to forward a
-message, it is given a `destinationId` which is the standard chain id always. The config stored under that id holds two
-addresses:
+Routing works off a per-destination config, keyed by the standard chain id. The config
+stored under that id holds two addresses:
 
 - `localAdapter` - the adapter on this chain that the controller hands the message to.
 - `remoteAdapter` - the address on the destination chain that the message is addressed
@@ -21,9 +24,10 @@ Nothing requires the destination to be a *different* chain: a lane may run from 
 chain x, since `updateConfig` accepts this chain's own id and the send path never compares
 `_destinationChainId` against `block.chainid`. For such a lane, `localAdapter` and
 `remoteAdapter` must both be set to the SAME local adapter - it is both the contract the
-controller delegatecalls and the address the message is addressed to. You can refer to `mocks/SameChainAdapter.sol` for more.
+controller delegatecalls and the address the message is addressed to. See
+`test/mocks/SameChainAdapter.sol` for a reference implementation.
 
-### Permissions
+## Permissions
 
 Only one adapter is configured per destination chain id at any given time, so that single
 bridge is a single point of failure. This demands care when assigning permissions.
@@ -51,9 +55,12 @@ its permissions matter.
 itself**. Sensitive configuration is then changed only by the L2 DAO acting directly, off
 the cross-chain path - so a compromised bridge cannot reach it.
 
-**The alternative.** If you consider bridge compromise a negligible risk, you can avoid having a dedicated `Executor`, but instead set `executor = dao` on the controller and give those sensitive permissions to the DAO, which means only way you can update L2 is through cross-chain.
+**The alternative.** If you consider bridge compromise a negligible risk, drop the
+dedicated `Executor`, set `executor = dao` and grant the sensitive permissions to the DAO.
+The L2 can then only be updated over the cross-chain path.
 
-> Note that `DAO` is still required on both chains due to the fact that `CrossChainController` is an OSx plugin.
+> A `DAO` is required on both chains regardless, because `CrossChainController` is an OSx
+> plugin.
 
 > These options are not mutually exclusive: the L2 controller's sensitive functions can be
 > made callable by both the `Executor` (over the cross-chain path) and the L2 DAO. That
@@ -61,7 +68,7 @@ the cross-chain path - so a compromised bridge cannot reach it.
 > immediately when speed matters - at the cost of accepting the bridge-compromise exposure
 > described above.
 
-### The Diagram
+## Cross-chain flow
 
 ```mermaid
 %%{init: {"themeVariables": {"fontSize": "18px"}}}%%
@@ -106,7 +113,7 @@ flowchart TB
 > longer be called, which means the external contracts can no longer be called by that
 > executor.
 
-### Same Chain Delivery
+## Same Chain Delivery
 
 A lane can also target the chain it lives on: the whole flow stays local and no bridge is
 involved. The controller `delegatecall`s a `SameChainAdapter`, which stores its own
@@ -141,9 +148,9 @@ permissions on those external contracts.
 > adapters or point them at a different `SameChainAdapter` (one that uses a different
 > executor).
 
-### Functions
+## Functions
 
-#### `CrossChainController`
+### `CrossChainController`
 
 The message paths that move messages forward (`forwardMessage`, `receiveMessage`,
 `retryMessage`) are all `whenNotPaused`. `cancelMessage` and the admin paths
@@ -182,7 +189,7 @@ deliberately are not, so an incident can be recovered from while the system is p
 > (failed) message can be retried, so leaving it open is safe. If you narrow it, grant
 > it to an address that is **not** the configured executor - e.g. an ops multisig.
 
-#### `IBaseAdapter` / `BaseAdapter`
+### `IBaseAdapter` / `BaseAdapter`
 
 The contract every transport must satisfy. The split in execution context is the key
 detail: `sendMessage` is reached only by `delegatecall` from the controller, so it runs
@@ -195,7 +202,7 @@ itself so it can read its own trusted-remote map.
 | `toNativeChainId(chainId)` / `fromNativeChainId(chainId)` | view | Translates between standard EVM chain ids and the bridge's own encoding. Both **must revert** on unmapped ids - returning `0` would silently address the wrong lane. |
 | `_forwardMessage(messageId, payload, originChainId)` | internal | Hands an authenticated inbound message to the controller via a plain `CALL`. Guarded by an `address(this) == _selfAddress` check, so it can never run under `delegatecall`. |
 
-#### `Executor`
+### `Executor`
 
 | Function | Access | What it does |
 |---|---|---|
@@ -217,7 +224,7 @@ balance. Funding is a separate, prior operation; it is never part of the message
 balance is short, the action fails, the zero `allowFailureMap` reverts the whole batch,
 and the message is captured as `Delivered` - fund the executor and `retryMessage`.
 
-### Deployment
+## Deployment
 
 From the Aragon OSx point of view, `CrossChainController` is a **plugin** (see the [plugin docs](https://docs.aragon.org/osx-contracts/1.x/core/plugins/)). Every plugin installation goes through the singleton `PluginSetupProcessor`, which requires the plugin to have its own `PluginRepo` - the registry that holds all of its published versions. A DAO installs a specific version by pointing at that repo.
 
@@ -255,7 +262,7 @@ Note the asymmetry in what each side stores: `updateConfig` records the remote
 remote **controller** (the authenticated sender). Swapping them is the most common
 wiring mistake - inbound messages are then rejected with `REMOTE_NOT_TRUSTED`.
 
-### Decommissioning a chain (runbook)
+## Decommissioning a chain (runbook)
 
 Clearing a lane does **not** block that chain's delivered backlog. `updateConfig` and
 `cancelMessage` guard two different doors, and retiring a chain requires closing
@@ -281,7 +288,7 @@ Doing only step 1 leaves the delivered backlog executable by anyone (the setup g
 `RETRY_MESSAGE_PERMISSION` to `ANY_ADDR`); doing only step 2 leaves the door open for
 new deliveries.
 
-### Repointing the executor (runbook)
+## Repointing the executor (runbook)
 
 When calling `updateExecutor`, make sure the new executor **already allows the
 controller to call `execute` on it** at the moment of the switch. `updateExecutor`
@@ -316,7 +323,7 @@ An `updateExecutor` proposal must therefore bundle, in this order:
    (revoke `EXECUTE_PERMISSION` / transfer the old `Executor`'s ownership away), so
    the abandoned target does not keep a live execution path.
 
-### Uninstallation
+## Uninstallation
 
 Uninstalling the plugin revokes permissions - nothing more. `prepareUninstallation`
 returns the revoke list, but a setup contract cannot call into the plugin, so the
