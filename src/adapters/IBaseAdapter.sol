@@ -4,9 +4,10 @@ pragma solidity ^0.8.0;
 /// @title IBaseAdapter
 /// @notice The interface every bridge transport must satisfy to be usable as a
 ///         `CrossChainController` adapter.
-/// @dev The two paths run in different execution contexts: `sendMessage` is
-///      reached only by `delegatecall` from the controller, while the receive
-///      path runs as the adapter itself so it can read its own storage.
+/// @dev `sendMessage` is reached only by `delegatecall` from the controller, so
+///      it runs in the controller's context. An implementation's receive path
+///      is the mirror image - it runs as the adapter itself - but that side is
+///      not part of this interface.
 /// @custom:security-contact sirt@aragon.org
 interface IBaseAdapter {
     /// @notice The address of cross chain controller that adapter stores

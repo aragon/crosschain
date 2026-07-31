@@ -7,8 +7,9 @@ pragma solidity ^0.8.8;
 ///         field the destination authenticates against travels INSIDE this
 ///         transaction, so it is covered by the bridge's payload attestation rather
 ///         than taken on the adapter's word.
-/// @param nonce The origin controller's monotonic nonce for this lane. Owns the
-///        message identity; makes it unique in a namespace the origin controls.
+/// @param nonce The origin controller's monotonic nonce, counted globally
+///        rather than per lane. Owns the message identity; makes it unique in a
+///        namespace the origin controls.
 /// @param origin The originating address that initiated forwardMessage on `CrossChainController`.
 /// @param controller The address of the controller to ensure that re-deploying the
 ///                   controller will not cause tx id collision.

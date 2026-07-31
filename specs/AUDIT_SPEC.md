@@ -34,6 +34,7 @@ executes the actions through an `Executor`.
 should be read as the specification the implementation is audited against.
 
 [test/e2e/README.md](../test/e2e/README.md) documents the end-to-end suites,
-which carry a message through both stacks against a real OSx `DAO` and, in the
-fork suite, against production CCIP Router bytecode. They are out of scope
-themselves, but are the most direct executable statement of intended behaviour.
+which carry a message through both stacks against a real OSx `DAO` (except
+`CrossChainRoundTrip.t.sol`, which uses the DAO mock) and, in the fork suite,
+against production CCIP Router bytecode. They are out of scope themselves, but
+are the most direct executable statement of intended behaviour.

@@ -16,7 +16,8 @@ addresses one side PRODUCES to be the ones the other side ACCEPTS.
 They also run against `CrossChainControllerDAOMock`, whose `hasPermission` is a
 settable mapping. That proves the controller CALLS the right permission checks,
 but never that a real `PermissionManager` grant makes them pass or that a revoke
-makes them fail. Everything here goes through a real OSx `DAO`.
+makes them fail. Every suite here goes through a real OSx `DAO`, except
+`CrossChainRoundTrip.t.sol`, which stays on the mock.
 
 ## Layout
 
@@ -36,12 +37,15 @@ makes them fail. Everything here goes through a real OSx `DAO`.
 ## Running
 
 ```bash
-make test-e2e        # in-process, no RPC needed
+make test-e2e        # the end-to-end suites
 make test-e2e-fork   # needs MAINNET_RPC_URL + BASE_RPC_URL
 ```
 
-The fork suite `vm.skip`s every test when the RPC endpoints are absent, so a
-plain `forge test` (and CI) is unaffected by it.
+`--match-path 'test/e2e/*.t.sol'` does not exclude `fork/` — the glob crosses
+directory separators — so `make test-e2e` and a plain `forge test` both select
+the fork suite. It `vm.skip`s every test when the RPC endpoints are absent, which
+is why CI is unaffected; with endpoints configured it will reach the network.
+Note it falls back to `RPC_URL` when `MAINNET_RPC_URL` is unset.
 
 ## How CCIP is simulated
 

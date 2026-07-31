@@ -41,13 +41,17 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     address public executor;
 
     /// @notice Gas withheld from an inbound payload so the failure path can
-    ///         always record it as `Delivered`.
+    ///         record it as `Delivered`.
     /// @dev Without a reserve the EVM hands the payload 63/64 of what is left
-    ///      and keeps only 1/64 - not enough to store `Delivered` AND emit, so
-    ///      an out-of-gas payload reverts the whole delivery and leaves NO
-    ///      record. The message is then unreachable by `retryMessage` and
-    ///      `cancelMessage`, recoverable only through the bridge's own manual
-    ///      execution. See `initialize` for sizing.
+    ///      and keeps only 1/64, which may be too little to store `Delivered`
+    ///      AND emit - the whole delivery then reverts and leaves NO record.
+    ///      The message is unreachable by `retryMessage` and `cancelMessage`,
+    ///      recoverable only through the bridge's own manual execution.
+    ///
+    ///      Size it against the payload, not once and for all: the failure
+    ///      branch emits the full encoded transaction plus the revert reason,
+    ///      so its cost grows with payload size. `0` disables the reserve.
+    ///      See `initialize`.
     uint256 public minFailedMessageGas;
 
     /// @notice Restricts a function to local adapters registered via `updateConfig`.
@@ -149,10 +153,12 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     }
 
     /// @notice Repoints this controller at a different executor.
-    /// @dev The new executor must ALREADY allow this controller to call
-    ///      `execute` on it at the moment of the switch; only the presence of
-    ///      code is validated here. Bundle the authorization into the same
-    ///      proposal, ahead of this call.
+    /// @dev Only the presence of code is validated; authorization is not and
+    ///      cannot be checked here. The new executor must allow this controller
+    ///      to call `execute` before the next inbound payload needs to run -
+    ///      bundling that into the same proposal is the safe way. Messages
+    ///      arriving in the gap are not lost: they are recorded as `Delivered`
+    ///      and can be retried once authorization is in place.
     /// @param _executor The new executor address. Must be a contract.
     function updateExecutor(address _executor) public virtual auth(Permissions.MANAGE_CONTROLLER_CONFIG_PERMISSION_ID) {
         _setExecutor(_executor);
@@ -160,8 +166,10 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
 
     /// @notice Moves pre-funded fee assets out of this contract.
     /// @dev This contract is the fee payer: under `delegatecall` the bridge call
-    ///      is made by this account, so fees come straight from here. Nothing is
-    ///      ever handed to the adapter and nothing can be stranded there.
+    ///      is made by this account, so fees come straight from here. The
+    ///      protocol never routes funds through the adapter, and this function
+    ///      can recover anything held here. Note that assets transferred
+    ///      DIRECTLY to an adapter are stranded - adapters have no rescue path.
     /// @param _token The asset to move; `address(0)` for native currency.
     /// @param _to The recipient (typically the DAO).
     /// @param _amount The amount to move.
@@ -336,6 +344,8 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     /// @dev External only so `receiveMessage` can wrap it in `try/catch`;
     ///      callable exclusively by this contract. Decoding lives here so a
     ///      malformed payload is captured rather than reverting the delivery.
+    ///      `retryMessage` self-calls it too, deliberately WITHOUT `try/catch`,
+    ///      so a failed retry reverts and the message stays `Delivered`.
     /// @param _txId The tx id passed to the executor as its call id.
     /// @param _payload The encoded Action[] message.
     function executeActions(bytes32 _txId, bytes memory _payload) external {
@@ -445,7 +455,9 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     /// @notice Shared by `initialize` and `updateExecutor`.
     /// @dev Only checks that the target has code. It cannot verify that the new
     ///      executor authorizes this controller to call `execute` on it, so a
-    ///      repoint that skips that step silently breaks the receive path.
+    ///      repoint that skips that step leaves every inbound payload failing
+    ///      on execution. Deliveries still land as `Delivered` and surface as
+    ///      `MessageExecutionFailed`, so they stay retryable once fixed.
     function _setExecutor(address _executor) internal {
         if (_executor.code.length == 0) revert Errors.HAS_NO_CODE(_executor);
 

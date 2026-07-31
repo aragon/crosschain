@@ -124,7 +124,11 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
 
             messageId = CCIP_ROUTER.ccipSend{ value: fee }(nativeChainId, ccipMessage);
         } else {
-            // The fee is paid in ERC20, so any native value would be stranded.
+            // Unreachable from this controller: `forwardMessage` is non-payable,
+            // so `msg.value` is always 0 under its `delegatecall`. Kept as a
+            // defensive assertion for any other controller that reaches this
+            // code with value attached, where the fee is paid in ERC20 and the
+            // native value would serve no purpose.
             if (msg.value != 0) revert Errors.UNEXPECTED_NATIVE_VALUE();
 
             uint256 balance = IERC20(FEE_TOKEN).balanceOf(address(this));
@@ -169,8 +173,10 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
     // Internal
     // -------------------------------------------------------------------------
 
-    /// @notice Builds the CCIP message. No tokens are ever transferred, only
-    ///         the encoded payload.
+    /// @notice Builds the CCIP message. No CCIP token transfer is ever attached
+    ///         - `tokenAmounts` is always empty and only the payload travels.
+    ///         The ERC20 fee, when configured, is separate: the router pulls it
+    ///         from the controller.
     function _buildMessage(address _receiver, uint256 _gasLimit, bytes memory _message, address _feeToken)
         internal
         pure

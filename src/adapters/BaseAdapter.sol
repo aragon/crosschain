@@ -54,8 +54,10 @@ abstract contract BaseAdapter is IBaseAdapter {
     }
 
     /// @param _crossChainController The LOCAL controller that owns this
-    ///        adapter. It is the only account that may `delegatecall` the send
-    ///        path, and the account the receive path reports to.
+    ///        adapter. The send path asserts it is running in this controller's
+    ///        CONTEXT (`address(this) == CROSS_CHAIN_CONTROLLER`); the caller
+    ///        itself is never checked. It is also the account the receive path
+    ///        reports to.
     /// @param _trustedRemoteConfigs The remote controllers trusted to originate
     ///        messages, per standard chain id.
     constructor(address _crossChainController, TrustedRemoteConfig[] memory _trustedRemoteConfigs) {

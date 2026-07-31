@@ -54,14 +54,18 @@ Requires [Foundry](https://book.getfoundry.sh/getting-started/installation).
 ```shell
 forge build
 forge fmt
-make test            # everything except the fork suite
-make test-e2e        # end-to-end suite, in-process, no RPC needed
-make test-e2e-fork   # end-to-end against real CCIP routers; needs RPC endpoints
+make test            # the whole suite
+make test-e2e        # the end-to-end suites
+make test-e2e-fork   # end-to-end against real CCIP routers; requires RPC endpoints
 ```
 
-Unit suites live in `test/unit/`, one file per function. The end-to-end suites
-carry a message the whole way through both stacks — see
-[test/e2e/README.md](./test/e2e/README.md).
+The fork tests are not excluded by the first two targets — they skip themselves
+unless `MAINNET_RPC_URL` (or `RPC_URL`) and `BASE_RPC_URL` are set, in which case
+they will reach the network.
+
+Unit suites live in `test/unit/`, mostly one file per function, plus a few
+cross-cutting suites. The end-to-end suites carry a message the whole way through
+both stacks — see [test/e2e/README.md](./test/e2e/README.md).
 
 ## Deployment
 
@@ -96,7 +100,10 @@ controller.
 
 Note the asymmetry: `updateConfig` records the remote **adapter** (the bridge-level
 receiver), while the adapter constructor records the remote **controller** (the
-authenticated sender). Swapping them makes inbound messages fail with `REMOTE_NOT_TRUSTED`.
+authenticated sender). Confusing the two is the most common wiring mistake. Pointing the
+adapter's trusted remote at the remote *adapter* makes every inbound message fail with
+`REMOTE_NOT_TRUSTED`; getting `updateConfig`'s `remoteAdapter` wrong fails earlier and more
+opaquely, because the bridge delivers to an address that cannot receive.
 
 Full step-by-step instructions are in [Deployment](./specs/SPEC.md#deployment).
 
@@ -109,9 +116,12 @@ There are two separate pots.
 against what is held. `sweep` moves the funds back out.
 
 **The executor** pays for the actions themselves. Messages carry instructions, never funds,
-so any native value or tokens an action spends must already sit on the executor when the
-message arrives. An underfunded action is captured as `Delivered` and can be retried once
-funded — see [Asset-bearing actions](./specs/SPEC.md#executor) for the ERC20 caveat.
+so whatever an action spends must be available when it runs — normally by pre-funding the
+executor. An underfunded action is captured as `Delivered` and can be retried once funded.
+
+The pots are separate by default but not isolated: a payload that deliberately targets the
+controller can still reach its fee float. See
+[Asset-bearing actions](./specs/SPEC.md#executor) for that and for the ERC20 caveat.
 
 ## Documentation
 

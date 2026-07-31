@@ -216,12 +216,18 @@ itself so it can read its own trusted-remote map.
 **Asset-bearing actions.** The messaging layer moves instructions, never funds: only the
 encoded `Action[]` bytes cross the bridge, and the entire receive path - the adapter's
 bridge callback, `receiveMessage`, `executeActions`, `execute` - is non-payable. Assets
-must already sit on the executor when the message arrives. Funding is a separate, prior
-operation; it is never part of the message.
+must be available when the action runs - normally because the executor was pre-funded, since
+the message carries no funds. Funding is a separate, prior operation; it is never part of
+the message. An earlier action in the same batch may also bring the assets in: a payload
+may `approve` and let a third party pull in one message, or receive then spend.
 
-Note that this makes **two separate pots**: the controller is pre-funded to pay bridge
-fees, and the executor is pre-funded to pay for actions. Executing an action never touches
-the controller's fee float, and `sweep` only moves the controller's.
+Note that this makes **two pots**: the controller is pre-funded to pay bridge fees, and the
+executor is pre-funded to pay for actions. `sweep` only ever moves assets held by the
+controller. The pots are separate by default but not isolated by the code - a payload that
+deliberately targets the controller can still reach its fee float. Two ways that happens:
+a chained hop (an action calling `forwardMessage` on the destination controller) pays the
+onward bridge fee out of that controller's float, and under `executor = dao` an action
+executes as the DAO and so inherits the DAO's `SWEEP_PERMISSION`.
 
 *Native value.* An action may target a payable function with `value > 0`: `payable` only
 governs whether a call can *carry* `msg.value`, not whether a contract can *spend* what it
@@ -283,8 +289,12 @@ the *other* chain's controller.
 
 Note the asymmetry in what each side stores: `updateConfig` records the remote
 **adapter** (the bridge-level receiver), while the adapter constructor records the
-remote **controller** (the authenticated sender). Swapping them is the most common
-wiring mistake - inbound messages are then rejected with `REMOTE_NOT_TRUSTED`.
+remote **controller** (the authenticated sender). Confusing the two is the most
+common wiring mistake, and the two halves fail differently. Pointing the adapter's
+trusted remote at the remote *adapter* means inbound messages are rejected with
+`REMOTE_NOT_TRUSTED`. Getting `updateConfig`'s `remoteAdapter` wrong fails earlier
+and more opaquely: the bridge delivers to an address that cannot receive the call,
+so the trusted-remote check is never reached.
 
 ## Decommissioning a chain (runbook)
 

@@ -101,16 +101,17 @@ library Errors {
     ///         configured (the value would be stranded).
     error UNEXPECTED_NATIVE_VALUE();
 
-    /// @notice Thrown when a native currency transfer out of the controller
-    ///         was rejected by the recipient.
+    /// @notice Thrown when a native transfer out of the controller fails -
+    ///         the amount exceeds this contract's balance, or the recipient
+    ///         rejected it or ran out of gas accepting it.
     error NATIVE_TRANSFER_FAILED(address to, uint256 amount);
 
     // ---------------------------------------------------------------------
     // Defensive receive / retry
     // ---------------------------------------------------------------------
 
-    /// @notice Thrown when an inbound message carries a `txId` that is already
-    ///         stored, i.e. it was already delivered, executed or cancelled.
+    /// @notice Thrown when an inbound message resolves to a `txId` that is
+    ///         already stored, i.e. already delivered, executed or cancelled.
     error MESSAGE_ALREADY_DELIVERED_OR_EXECUTED(bytes32 txId);
 
     /// @notice Thrown when retrying or cancelling a `txId` that is not
