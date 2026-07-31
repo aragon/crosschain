@@ -2,6 +2,9 @@
 
 pragma solidity ^0.8.8;
 
+/// @title Errors
+/// @notice The custom errors used across the cross-chain contracts.
+/// @custom:security-contact sirt@aragon.org
 library Errors {
     // ---------------------------------------------------------------------
     // Generic / configuration
@@ -16,14 +19,12 @@ library Errors {
     error INVALID_CHAIN_ID();
 
     /// @notice Thrown when a lane is only partially configured. A lane is
-    ///         either fully set (`localAdapter`, `remoteAdapter` and
-    ///         `bridgeChainId` all non-zero) or fully cleared.
+    ///         either fully set (`localAdapter` and `remoteAdapter` both
+    ///         non-zero) or fully cleared.
     error INCOMPLETE_ADAPTER_CONFIG(uint256 chainId);
 
-    /// @notice Thrown when forwarding to a chain whose lane is unset. Covers a
-    ///         missing local adapter, a missing remote adapter, and a missing
-    ///         bridge-native chain id (which would otherwise send to
-    ///         selector `0`).
+    /// @notice Thrown when using a chain whose lane is unset, i.e. its
+    ///         `localAdapter` or `remoteAdapter` is `address(0)`.
     error ADAPTER_NOT_CONFIGURED(uint256 chainId);
 
     /// @notice Thrown when an address that must be a contract
@@ -100,18 +101,22 @@ library Errors {
     ///         configured (the value would be stranded).
     error UNEXPECTED_NATIVE_VALUE();
 
+    /// @notice Thrown when a native transfer out of the controller fails -
+    ///         the amount exceeds this contract's balance, or the recipient
+    ///         rejected it or ran out of gas accepting it.
     error NATIVE_TRANSFER_FAILED(address to, uint256 amount);
 
     // ---------------------------------------------------------------------
     // Defensive receive / retry
     // ---------------------------------------------------------------------
 
-    /// @notice Thrown when an inbound message reuses a call id that is already
-    ///         stored as delivered or executed.
+    /// @notice Thrown when an inbound message resolves to a `txId` that is
+    ///         already stored, i.e. already delivered, executed or cancelled.
     error MESSAGE_ALREADY_DELIVERED_OR_EXECUTED(bytes32 txId);
 
-    /// @notice Thrown when an inbound message reuses a call id that is already
-    ///         stored as delivered or executed.
+    /// @notice Thrown when retrying or cancelling a `txId` that is not
+    ///         `Delivered`, i.e. it was never delivered, already executed or
+    ///         already cancelled.
     error MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS(bytes32 txId);
 
     /// @notice Thrown when message delivered to the actual chain doesn't match

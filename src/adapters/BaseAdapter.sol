@@ -19,8 +19,9 @@ abstract contract BaseAdapter is IBaseAdapter {
     address private immutable _selfAddress;
 
     /// @notice A standard chain id paired with the remote trusted sender.
-    /// @param standardChainId The standard chain id of remote chain.
-    /// @param trustedRemote The remote trusted address(i.e origin forwarder)
+    /// @param standardChainId The standard chain id of the remote chain.
+    /// @param trustedRemote The remote `CrossChainController` allowed to
+    ///        originate messages for that chain.
     struct TrustedRemoteConfig {
         uint256 standardChainId;
         address trustedRemote;
@@ -39,11 +40,11 @@ abstract contract BaseAdapter is IBaseAdapter {
     /// @notice Restricts a function to being `delegatecall`ed by the owning
     ///         `CrossChainController`.
     /// @dev Under `delegatecall` from the controller, `address(this)` IS the
-    ///      controller. A direct call to the adapter fails this check. This is
-    ///      the mirror image of `onlyCrossChainController`: `msg.sender` is
-    ///      whoever called `forwardMessage` and carries no meaning here, so the
-    ///      *context* is what must be asserted. Authorization of the send
-    ///      itself is `FORWARD_MESSAGE_PERMISSION` on the controller.
+    ///      controller, so a direct call to the adapter fails this check.
+    ///      `msg.sender` is whoever called `forwardMessage` and carries no
+    ///      meaning here, so the execution *context* is what must be asserted.
+    ///      Authorization of the send itself is `FORWARD_MESSAGE_PERMISSION` on
+    ///      the controller.
     // forge-lint: disable-next-line(unwrapped-modifier-logic)
     modifier onlyDelegatecallFromController() {
         if (address(this) != CROSS_CHAIN_CONTROLLER) {
@@ -52,9 +53,13 @@ abstract contract BaseAdapter is IBaseAdapter {
         _;
     }
 
-    /// @param _crossChainController The controller that owns this adapter. Its
-    ///        DAO is adopted as the adapter's permission manager.
-    /// @param _trustedRemoteConfigs The remote trusted config.
+    /// @param _crossChainController The LOCAL controller that owns this
+    ///        adapter. The send path asserts it is running in this controller's
+    ///        CONTEXT (`address(this) == CROSS_CHAIN_CONTROLLER`); the caller
+    ///        itself is never checked. It is also the account the receive path
+    ///        reports to.
+    /// @param _trustedRemoteConfigs The remote controllers trusted to originate
+    ///        messages, per standard chain id.
     constructor(address _crossChainController, TrustedRemoteConfig[] memory _trustedRemoteConfigs) {
         if (_crossChainController == address(0)) revert Errors.ZERO_ADDRESS();
 
@@ -74,13 +79,14 @@ abstract contract BaseAdapter is IBaseAdapter {
         return _trustedRemotes[_chainId];
     }
 
-    /// @notice Once adapter receives a message, this forwards it to the CrossChainController.
+    /// @notice Hands an authenticated inbound message to the controller.
+    /// @dev The caller must have already verified the remote sender.
     /// @param _messageId The bridge-level message identifier.
     /// @param _payload The encoded payload message.
     /// @param _originChainId The standard chain id the message came from.
     function _forwardMessage(uint256 _messageId, bytes memory _payload, uint256 _originChainId) internal {
-        // Extra defense to ensure that caller on controller will always be
-        // Adapter and not the contract that called adapter with delegatecall.
+        // Guarantees the controller sees this adapter as `msg.sender`, never a
+        // contract that reached this code through `delegatecall`.
         if (address(this) != _selfAddress) {
             revert Errors.DELEGATE_CALL_FORBIDDEN(address(this), _selfAddress);
         }
@@ -88,9 +94,9 @@ abstract contract BaseAdapter is IBaseAdapter {
         CrossChainController(payable(CROSS_CHAIN_CONTROLLER)).receiveMessage(_messageId, _payload, _originChainId);
     }
 
-    /// @notice Sets the trusted remotes for receiving messages.
-    ///        Generally, it should be the cross chain controller
-    ///        of source chain.
+    /// @notice Registers the remote controllers trusted to originate messages.
+    /// @dev A zero `trustedRemote` leaves the chain unset. Implementations MUST
+    ///      reject a zero sender so an unset chain can never authenticate.
     function _setTrustedRemotes(TrustedRemoteConfig[] memory _trustedRemoteConfigs) internal {
         for (uint256 i = 0; i < _trustedRemoteConfigs.length; i++) {
             uint256 chainId = _trustedRemoteConfigs[i].standardChainId;

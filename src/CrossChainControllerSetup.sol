@@ -78,18 +78,37 @@ contract CrossChainControllerSetup is PluginUpgradeableSetup {
         override
         returns (PermissionLib.MultiTargetPermission[] memory permissions)
     {
-        // Guardian can not be determined if it was given a permission in prepareInstallation.
-        // Below permission revoke are enough even if guardian stays with pause permission.
-
-        // There's a chance executor might have been set as DAO
-        // and permission not removed after it was set to another executor.
-        // Pass `true` so it always tries to revoke EXECUTE_PERMISSION from
-        // CrosschainController on the dao. Revoke doesn't revert if permission
-        // is not currently granted.
+        // The guardian is not recoverable here, so its `PAUSE_PERMISSION`
+        // survives. That is accepted, not inert: `receiveMessage` is gated by
+        // lane config rather than by a DAO permission, so the message paths
+        // stay live after uninstall and a surviving guardian can still freeze
+        // them - and `UNPAUSE_PERMISSION` is revoked from the DAO below, so
+        // such a freeze cannot be lifted without re-granting. `cancelMessage`
+        // is not pausable, so cleanup remains possible either way.
+        //
+        // `_executorIsDao` is always `true` so the controller's
+        // `EXECUTE_PERMISSION` ON the DAO is always attempted - it may have
+        // been granted at install and left behind by a later `updateExecutor`.
+        // Revoking an ungranted permission does not revert.
+        //
+        // NOTE: this only revokes permissions. The controller's own state
+        // survives, so clear every lane and cancel the delivered backlog in the
+        // same proposal, ahead of this call.
         permissions = _getPermissions(_dao, _payload.plugin, address(0), true, PermissionLib.Operation.Revoke);
     }
 
     /// @notice Encodes the given installation parameters into a byte array
+    /// @param executor The executor inbound payloads run on. Three modes:
+    ///        `address(0)` has the setup deploy a dedicated `Executor` and
+    ///        transfer its ownership to the plugin; the DAO itself keeps
+    ///        execution on the DAO and is granted `EXECUTE_PERMISSION` to the
+    ///        plugin; any other contract is taken as-is - the setup neither
+    ///        takes ownership of it nor grants anything on it, so the DAO must
+    ///        separately authorize the plugin to call `execute` on it or the
+    ///        receive path cannot execute.
+    /// @param guardian An address granted `PAUSE_PERMISSION` only, so it can
+    ///        freeze the message paths but not reopen them. `address(0)` for
+    ///        none.
     /// @param minFailedMessageGas Gas the controller withholds so a failed
     ///        inbound message can always be recorded as `Delivered`. 45000 is a
     ///        good enough value; see `CrossChainController.initialize`.

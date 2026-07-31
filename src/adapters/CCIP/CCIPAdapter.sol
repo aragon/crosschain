@@ -19,9 +19,10 @@ import { IBaseAdapter } from "../IBaseAdapter.sol";
 
 /// @title CCIPAdapter
 /// @notice Chainlink CCIP implementation of `IBaseAdapter`.
-/// @dev The caller must call `sendMessage` via delegate call because:
-///          1. It's a controller that pays, not adapter.
-///          2. sender on the remote adapter must be crosschain controller, not the adapter.
+/// @dev `sendMessage` must be reached by `delegatecall` from the controller, so
+///      that the controller pays the fee from its own balance and CCIP
+///      attributes the message to the controller rather than to this adapter.
+///      `ccipReceive` runs as this adapter under a plain `CALL` from the router.
 /// @custom:security-contact sirt@aragon.org
 contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
     using SafeERC20 for IERC20;
@@ -31,12 +32,12 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
 
     /// @notice The fee token used to pay bridge fees.
     ///         `address(0)` = chain's native currency.
-    /// @dev a storage read here would resolve against
-    ///      the controller's slots under `delegatecall`.
-    ///      Changing the fee token requires a new adapter.
+    /// @dev Immutable rather than stored: under `delegatecall` a storage read
+    ///      would resolve against the controller's slots. Changing the fee
+    ///      token requires deploying a new adapter.
     address public immutable FEE_TOKEN;
 
-    /// @notice The receive function must only allow CCIP router.
+    /// @notice Restricts the receive path to the configured CCIP router.
     // forge-lint: disable-next-line(unwrapped-modifier-logic)
     modifier onlyRouter() {
         if (msg.sender != address(CCIP_ROUTER)) {
@@ -46,11 +47,12 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
         _;
     }
 
-    /// @param _crosschainController The owning controller.
+    /// @param _crosschainController The LOCAL controller that owns this adapter.
     /// @param _ccipRouter The CCIP router on this chain.
-    /// @param _feeToken The fee token, or `address(0)` for native. IMMUTABLE, so
-    ///        a non-native token must be a deployed contract.
-    /// @param _trustedRemoteConfigs The remote trusted config.
+    /// @param _feeToken The fee token, or `address(0)` for native. A non-native
+    ///        token must be a deployed contract.
+    /// @param _trustedRemoteConfigs The remote controllers trusted to originate
+    ///        messages, per standard chain id.
     constructor(
         address _crosschainController,
         address _ccipRouter,
@@ -62,7 +64,7 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
         if (_ccipRouter == address(0)) revert Errors.ZERO_ADDRESS();
 
         // `address(0)` is the native currency and is always valid.
-        // / Anything else must be a contract:
+        // Anything else must be a deployed token contract.
         if (_feeToken != address(0) && _feeToken.code.length == 0) {
             revert Errors.HAS_NO_CODE(_feeToken);
         }
@@ -122,8 +124,11 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
 
             messageId = CCIP_ROUTER.ccipSend{ value: fee }(nativeChainId, ccipMessage);
         } else {
-            // If called with delegate call, msg.value check is not needed, but still
-            // exists, so other consumers(not our controller) can decide to use it or not.
+            // Unreachable from this controller: `forwardMessage` is non-payable,
+            // so `msg.value` is always 0 under its `delegatecall`. Kept as a
+            // defensive assertion for any other controller that reaches this
+            // code with value attached, where the fee is paid in ERC20 and the
+            // native value would serve no purpose.
             if (msg.value != 0) revert Errors.UNEXPECTED_NATIVE_VALUE();
 
             uint256 balance = IERC20(FEE_TOKEN).balanceOf(address(this));
@@ -168,6 +173,10 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
     // Internal
     // -------------------------------------------------------------------------
 
+    /// @notice Builds the CCIP message. No CCIP token transfer is ever attached
+    ///         - `tokenAmounts` is always empty and only the payload travels.
+    ///         The ERC20 fee, when configured, is separate: the router pulls it
+    ///         from the controller.
     function _buildMessage(address _receiver, uint256 _gasLimit, bytes memory _message, address _feeToken)
         internal
         pure
@@ -188,6 +197,11 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
 
     // -------------------------------------------------------------------------
     // Chain id mapping
+    //
+    // CCIP addresses chains by its own selector, not by the EVM chain id. Both
+    // directions revert on an unmapped id: returning `0` would silently address
+    // the wrong lane. Selectors are from
+    // https://docs.chain.link/ccip/directory/mainnet
     // -------------------------------------------------------------------------
 
     /// @inheritdoc IBaseAdapter
