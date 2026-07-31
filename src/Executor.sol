@@ -28,7 +28,10 @@ contract Executor is CommonsExecutor, Ownable {
         return super.execute(_callId, _actions, _allowFailureMap);
     }
 
-    // If this is topped up, even if `Action[]` contains value > 0,
-    // it can execute actions and forward value.
+    /// @notice Accepts native currency so the executor can be pre-funded.
+    /// @dev The receive path is non-payable end to end, so an action carrying
+    ///      `value > 0` spends from this balance rather than from the message.
+    ///      The commons `Executor` has no payable path, so without this the
+    ///      contract could not be topped up at all.
     receive() external payable { }
 }

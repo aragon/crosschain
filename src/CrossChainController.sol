@@ -27,7 +27,8 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     using TransactionLib for Transaction;
     using TransactionLib for bytes;
 
-    // every message originator sends we put into an transaction and attach a nonce. It increments by one
+    /// @notice Monotonic counter stamped into every outbound transaction, so
+    ///         two identical messages never share a `txId`.
     uint256 internal _currentTxNonce;
 
     /// @notice txId -> stored message: its state and when it was delivered.
@@ -39,12 +40,18 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     /// @notice The executor that inbound payloads are executed on.
     address public executor;
 
-    /// @notice Without a reserve the EVM hands the payload 63/64 of what is left
-    ///      and keeps only 1/64 - not enough to store `Delivered` AND emit, so
-    ///      an out-of-gas payload reverts the whole delivery and leaves NO
-    ///      record. The message is then unreachable by `retryMessage` and
-    ///      `cancelMessage`, recoverable only through the bridge's own manual
-    ///      execution. See `initialize` for sizing.
+    /// @notice Gas withheld from an inbound payload so the failure path can
+    ///         record it as `Delivered`.
+    /// @dev Without a reserve the EVM hands the payload 63/64 of what is left
+    ///      and keeps only 1/64, which may be too little to store `Delivered`
+    ///      AND emit - the whole delivery then reverts and leaves NO record.
+    ///      The message is unreachable by `retryMessage` and `cancelMessage`,
+    ///      recoverable only through the bridge's own manual execution.
+    ///
+    ///      Size it against the payload, not once and for all: the failure
+    ///      branch emits the full encoded transaction plus the revert reason,
+    ///      so its cost grows with payload size. `0` disables the reserve.
+    ///      See `initialize`.
     uint256 public minFailedMessageGas;
 
     /// @notice Restricts a function to local adapters registered via `updateConfig`.
@@ -146,17 +153,23 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     }
 
     /// @notice Repoints this controller at a different executor.
-    /// @dev The message is routed to this executor address for execution.
-    /// @param _executor The new executor address.
+    /// @dev Only the presence of code is validated; authorization is not and
+    ///      cannot be checked here. The new executor must allow this controller
+    ///      to call `execute` before the next inbound payload needs to run -
+    ///      bundling that into the same proposal is the safe way. Messages
+    ///      arriving in the gap are not lost: they are recorded as `Delivered`
+    ///      and can be retried once authorization is in place.
+    /// @param _executor The new executor address. Must be a contract.
     function updateExecutor(address _executor) public virtual auth(Permissions.MANAGE_CONTROLLER_CONFIG_PERMISSION_ID) {
         _setExecutor(_executor);
     }
 
     /// @notice Moves pre-funded fee assets out of this contract.
-    /// @dev This contract is the fee payer: under `delegatecall` the bridge
-    ///      call is made by this account, so the fee (native `msg.value` or an
-    ///      ERC20 pulled by the router) comes straight from here. No funds are
-    ///      ever handed to the adapter and none can be stranded there.
+    /// @dev This contract is the fee payer: under `delegatecall` the bridge call
+    ///      is made by this account, so fees come straight from here. The
+    ///      protocol never routes funds through the adapter, and this function
+    ///      can recover anything held here. Note that assets transferred
+    ///      DIRECTLY to an adapter are stranded - adapters have no rescue path.
     /// @param _token The asset to move; `address(0)` for native currency.
     /// @param _to The recipient (typically the DAO).
     /// @param _amount The amount to move.
@@ -219,9 +232,9 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
 
     /// @inheritdoc ICrossChainController
     /// @dev Only a registered local adapter may call this. The adapter is
-    ///      responsible for having authenticated the remote sender.
-    ///      CrossChainController is bridge agnostic, so _messageId is only used
-    ///      for emit principles only and should not be fully trusted.
+    ///      responsible for having authenticated the remote sender. This
+    ///      contract is bridge agnostic, so `_messageId` is untrusted and only
+    ///      ever emitted, never used for control flow.
     function receiveMessage(uint256 _messageId, bytes memory _encodedTx, uint256 _originChainId)
         public
         virtual
@@ -255,16 +268,11 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
 
         // Reserve gas for the `catch` block before running the payload.
         //
-        // Without this, the EVM hands the payload 63/64 of whatever is left and
-        // keeps only 1/64. Say 101,000 gas is left and the payload needs
-        // 100,000: it gets 99,421, runs out, and the `catch` is left with 1,579
-        // -- too little to store the state and emit. So the whole call reverts
-        // and nothing is written down.
-        //
-        // That is the wrong outcome. The message did arrive and its actions
-        // were attempted; only the actions failed. It should be recorded as
-        // `Delivered` so it can be retried or cancelled here. Holding gas back
-        // guarantees the `catch` can always do that.
+        // The EVM would otherwise hand the payload 63/64 of what is left and
+        // keep only 1/64, which an out-of-gas payload can leave too small to
+        // store the state and emit - reverting the whole delivery and recording
+        // nothing. The message did arrive, so it must be recorded as
+        // `Delivered` and stay retryable or cancellable.
         uint256 reserve = minFailedMessageGas;
         uint256 gasLimit = gasleft();
         unchecked {
@@ -332,10 +340,13 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
         emit MessageCancelled(txId);
     }
 
-    /// @notice Decodes and executes an authenticated payload on the DAO.
-    /// @dev External only so it can be wrapped in `try/catch`; callable
-    ///      exclusively by this contract.
-    /// @param _txId The tx Id passed to the executor.
+    /// @notice Decodes and runs an authenticated payload on the executor.
+    /// @dev External only so `receiveMessage` can wrap it in `try/catch`;
+    ///      callable exclusively by this contract. Decoding lives here so a
+    ///      malformed payload is captured rather than reverting the delivery.
+    ///      `retryMessage` self-calls it too, deliberately WITHOUT `try/catch`,
+    ///      so a failed retry reverts and the message stays `Delivered`.
+    /// @param _txId The tx id passed to the executor as its call id.
     /// @param _payload The encoded Action[] message.
     function executeActions(bytes32 _txId, bytes memory _payload) external {
         if (msg.sender != address(this)) {
@@ -441,7 +452,12 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
         (messageId, fee) = abi.decode(returndata, (uint256, uint256));
     }
 
-    /// @notice Helper function used by `updateExecutor`.
+    /// @notice Shared by `initialize` and `updateExecutor`.
+    /// @dev Only checks that the target has code. It cannot verify that the new
+    ///      executor authorizes this controller to call `execute` on it, so a
+    ///      repoint that skips that step leaves every inbound payload failing
+    ///      on execution. Deliveries still land as `Delivered` and surface as
+    ///      `MessageExecutionFailed`, so they stay retryable once fixed.
     function _setExecutor(address _executor) internal {
         if (_executor.code.length == 0) revert Errors.HAS_NO_CODE(_executor);
 
@@ -450,8 +466,7 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
         executor = _executor;
     }
 
-    /// @notice Helper function used by `initialize` and
-    ///         `updateMinFailedMessageGas`.
+    /// @notice Shared by `initialize` and `updateMinFailedMessageGas`.
     /// @dev `0` is a valid value and disables the reserve.
     function _setMinFailedMessageGas(uint256 _minFailedMessageGas) internal virtual {
         emit MinFailedMessageGasUpdated(minFailedMessageGas, _minFailedMessageGas);

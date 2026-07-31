@@ -3,10 +3,10 @@ export
 
 .PHONY: test test-e2e test-e2e-fork
 
-test: ## Run everything except the fork suite (which skips without RPCs anyway)
+test: ## Run the whole suite; the fork tests skip themselves without RPCs
 	forge test
 
-test-e2e: ## Run the in-process end-to-end suite; no RPC needed
+test-e2e: ## Run the end-to-end suites; the fork tests skip themselves without RPCs
 	forge test --match-path 'test/e2e/*.t.sol'
 
 test-e2e-fork: ## Run the end-to-end suite against real CCIP Routers
