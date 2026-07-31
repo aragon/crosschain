@@ -3,6 +3,7 @@
 forge-std/=lib/forge-std/src/
 @aragon/osx-commons-contracts/src/=lib/osx/src/common/
 @aragon/osx/framework/=lib/osx/src/framework/
+@aragon/osx/core/=lib/osx/src/core/
 @chainlink/contracts/=lib/chainlink-evm/contracts/
 @chainlink/contracts-ccip/=lib/chainlink-ccip/chains/evm/
 @chainlink/local/=lib/chainlink-local/
