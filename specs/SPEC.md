@@ -5,9 +5,13 @@ The intended behaviour of the `CrossChainController` plugin and its adapters.
 ## Architecture
 
 The architecture is deliberately flexible: adapters are swappable, because the
-`CrossChainController` is the single entry point for both sending and receiving messages,
-and it is where all configuration lives. Adapters hold no routing state of their own -
-swapping in a new bridge means deploying an adapter and updating the controller's config.
+`CrossChainController` owns the per-destination lane config (which local adapter, which
+remote receiver), the executor and the gas reserve. Adapters hold no lane-selection state
+of their own. They do hold their own bridge state - the router, the fee token, and the
+trusted-remote map that authenticates inbound senders - all fixed at construction with no
+setter. Swapping in a new bridge therefore means deploying an adapter on **each** chain of
+the lane, baking in the counterpart controller as its trusted remote, and updating the
+config on **both** controllers.
 
 Routing works off a per-destination config, keyed by the standard chain id. The config
 stored under that id holds two addresses:
@@ -23,9 +27,15 @@ ends of every route: the sender's entry point and the receiver's final destinati
 Nothing requires the destination to be a *different* chain: a lane may run from chain x to
 chain x, since `updateConfig` accepts this chain's own id and the send path never compares
 `_destinationChainId` against `block.chainid`. For such a lane, `localAdapter` and
-`remoteAdapter` must both be set to the SAME local adapter - it is both the contract the
-controller delegatecalls and the address the message is addressed to. See
-`test/mocks/SameChainAdapter.sol` for a reference implementation.
+`localAdapter` is the loopback adapter. `remoteAdapter` must be non-zero, since
+`updateConfig` rejects a half-configured lane, but the loopback adapter ignores its value -
+setting it to the same address is a convention, not a requirement. **No loopback adapter
+ships in `src/`**, and `CCIPAdapter` cannot serve one (the router reports its own chain as
+unsupported, so the send reverts `DESTINATION_CHAIN_ID_NOT_SUPPORTED`). See
+`test/mocks/SameChainAdapter.sol`, which is a test-only reference implementation.
+
+Note also that a loopback bypasses `receiveMessage` entirely: no `_transactions` record is
+written, so there is no replay guard and no retryable `Delivered` state.
 
 ## Permissions
 
@@ -103,21 +113,27 @@ flowchart TB
 
 > If a dedicated `Executor` is set as the executor on the `CrossChainController`, that
 > executor must be given permission on the external contracts it is meant to call. If this
-> is no longer required, note that the `Executor`'s ownership cannot be transferred to
-> `address(0)` - which would otherwise be the clean way out, as it would mean the
+> is no longer required, note that the `Executor`'s ownership cannot be *transferred* to
+> `address(0)` (`renounceOwnership()` is inherited and un-overridden, so the owner can
+> still be zeroed) - which would otherwise be the clean way out, as it would mean the
 > controller can no longer call the `Executor`, hence the `Executor` can never be called,
 > hence those external contracts can never be called by the `Executor` (even if their
 > permissions still list it). To achieve the removal, either revoke the `Executor`'s
 > permissions on those external contracts, or call `updateExecutor` on the
-> `CrossChainController`. Updating the executor means the previously set `Executor` can no
-> longer be called, which means the external contracts can no longer be called by that
-> executor.
+> `CrossChainController`. Updating the executor means the controller stops routing
+> payloads to the previous `Executor`, so it no longer reaches those external contracts.
+> That is not a permanent removal: the controller remains that executor's owner, so a
+> later `updateExecutor` - or a lane pointed at a purpose-built adapter, which runs in the
+> controller's context - can drive it again. Revoking its permissions on the external
+> contracts is the durable fix, and even then it can still spend its own balance (it has a
+> `receive()`, so anyone can fund it) and call permissionless functions.
 
 ## Same Chain Delivery
 
 A lane can also target the chain it lives on: the whole flow stays local and no bridge is
-involved. The controller `delegatecall`s a `SameChainAdapter`, which stores its own
-dedicated `Executor` and hands the actions straight to it.
+involved. The controller `delegatecall`s a `SameChainAdapter`, which holds its own
+dedicated `Executor` in an **immutable** - never in storage, since under `delegatecall` a
+storage slot resolves against the CONTROLLER - and hands the actions straight to it.
 
 ```mermaid
 %%{init: {"themeVariables": {"fontSize": "18px"}}}%%
@@ -138,11 +154,15 @@ the end, it is still the DAO that implicitly calls the final external contracts.
 if someone else is allowed to call the controller, that someone else will implicitly have
 permissions on those external contracts.
 
-> Should you later decide to abandon this approach, it is impossible to change the owner
-> on the `Executor` from `CrossChainController` to `address(0)`: the controller has no
-> code path that calls the `Executor`'s `transferOwnership` directly, and even if the
-> `Executor` were made to call itself with `transferOwnership`, the caller would be the
-> `Executor`, not the controller. To achieve the removal, revoke all permissions on the
+> Should you later decide to abandon this approach, the two obvious routes to zeroing the
+> `Executor`'s owner are closed: the controller has no code path that calls the
+> `Executor`'s `transferOwnership` directly, and even if the `Executor` were made to call
+> itself with `transferOwnership`, the caller would be the `Executor`, not the controller.
+> It is not impossible, though - OZ's `renounceOwnership()` is inherited and
+> un-overridden, and the controller runs a configured adapter's code in its own context
+> via `delegatecall`, so whoever can set a lane and send on it can still zero the owner
+> and permanently brick the receive path. Override `renounceOwnership` to revert if that
+> matters. To achieve the removal deliberately, revoke all permissions on the
 > external contracts where the `Executor` was granted them, and/or on the
 > `CrossChainController` call `updateConfig` for this chain id and either clear the
 > adapters or point them at a different `SameChainAdapter` (one that uses a different
@@ -159,19 +179,21 @@ deliberately are not, so an incident can be recovered from while the system is p
 
 | Function | Access | What it does |
 |---|---|---|
-| `forwardMessage(dstChainId, gasLimit, message)` | `FORWARD_MESSAGE_PERMISSION` | Outbound entry point. Builds a `Transaction` with the next nonce, ABI-encodes it, and `delegatecall`s the local adapter's `sendMessage`. The `delegatecall` is what makes the adapter code run **as the controller**: the bridge fee is paid straight from the controller's own balance so adapters never custody funds, and the bridge attributes the message to the controller's address rather than the adapter's - which is why the far side trusts the remote *controller* as sender, and why an adapter may be swapped without changing who the destination trusts. Returns `txId`. |
+| `forwardMessage(dstChainId, gasLimit, message)` | `FORWARD_MESSAGE_PERMISSION` | Outbound entry point. Builds a `Transaction` with the next nonce, ABI-encodes it, and `delegatecall`s the local adapter's `sendMessage`. The `delegatecall` is what makes the adapter code run **as the controller**: the bridge fee is paid straight from the controller's own balance, so no protocol path routes funds through an adapter and its balance stays empty (assets sent *directly* to an adapter are stranded - there is no rescue path), and the bridge attributes the message to the controller's address rather than the adapter's - which is why the far side trusts the remote *controller* as sender, and why an adapter may be swapped without changing who the destination trusts. Returns `txId`. |
 | `quoteFee(dstChainId, gasLimit, message)` | view | Quotes the exact bytes `forwardMessage` would send, returning `(feeToken, fee, available)` - the last being this contract's current balance of that token. Use it to check funding before sending. |
-| `receiveMessage(messageId, encodedTx, originChainId)` | `onlyLocalAdapter(originChainId)` | Inbound entry point. Decodes the transaction, re-verifies both chain ids against the payload, rejects replays. Success → `Executed`; revert → `Delivered` and retryable. Never reverts on a bad payload. |
+| `receiveMessage(messageId, encodedTx, originChainId)` | `onlyLocalAdapter(originChainId)` | Inbound entry point. Decodes the transaction, re-verifies both chain ids against the payload, rejects replays. Success → `Executed`; revert → `Delivered` and retryable. Never reverts on a bad *inner* `Action[]` payload - that is captured as `Delivered`. It does revert on an undecodable outer envelope, a chain-id mismatch, a replay, or when less gas remains than `minFailedMessageGas`. |
 | `executeActions(txId, payload)` | self only | Decodes `Action[]` and calls the executor. External purely so `receiveMessage` can wrap it in `try/catch`; decoding lives here so malformed payloads are captured rather than bouncing the bridge delivery. |
-| `retryMessage(encodedTx)` | `RETRY_MESSAGE_PERMISSION` | Re-runs a `Delivered` message. Does **not** catch - if it fails again the whole call reverts and the message stays `Delivered`, so it can be retried later. ⚠️ **This permission must never be held by the address configured as the controller's `executor`** (including the DAO when `executor = dao`) - see the warning below the table. The setup grants it to `ANY_ADDR`. |
+| `retryMessage(encodedTx)` | `RETRY_MESSAGE_PERMISSION` | Re-runs a `Delivered` message. Does **not** catch - if it fails again the whole call reverts and the message stays `Delivered`, so it can be retried later. ⚠️ **This permission must never be narrowed to the address configured as the controller's `executor`** (including the DAO when `executor = dao`) - see the warning below the table. The setup grants it to `ANY_ADDR`, so in the shipped install anyone can retry. |
 | `cancelMessage(encodedTx)` | `CANCEL_MESSAGE_PERMISSION` | Burns a `Delivered` message. The `txId` moves to `Cancelled` and never back to `None`, so it can never be re-delivered or retried. |
-| `updateConfig(chainIds, configs)` | `MANAGE_CONTROLLER_CONFIG_PERMISSION` | Sets or clears lanes, keyed by **remote** chain id. A lane must be fully set or fully cleared; chain id `0` is rejected as it marks "unset". All-or-nothing because the two halves serve opposite directions and a half-set lane is broken either way: `localAdapter` alone can send but authenticates nothing inbound, `remoteAdapter` alone accepts inbound but cannot send. Requiring both keeps "is this lane configured?" a single unambiguous fact. Clearing both is likewise the only clean way to retire a lane: it shuts the route down in both directions at once, so no outbound message can be sent to a chain that is no longer trusted and no inbound message from it is still accepted. |
+| `updateConfig(chainIds, configs)` | `MANAGE_CONTROLLER_CONFIG_PERMISSION` | Sets or clears lanes, keyed by **remote** chain id. A lane must be fully set or fully cleared; chain id `0` is rejected because it is the value an unset mapping entry returns, so accepting it would let a missing lane look configured. All-or-nothing because the two halves serve opposite directions and a half-set lane is broken either way: `localAdapter` alone authenticates inbound but cannot send (`_validatedConfig` requires both), while `remoteAdapter` alone can neither send nor authenticate anything - it is only the address the outbound message is addressed to, and the inbound path never reads it. Note `isRegisteredLocalAdapter(address(0), chainId)` returns `true` for an unconfigured chain, so it is not a "is this lane configured?" check. Clearing both is likewise the only clean way to retire a lane: it shuts the route down in both directions at once, so no outbound message can be sent to a chain that is no longer trusted and no inbound message from it is still accepted. |
+| `updateMinFailedMessageGas(gas)` | `MANAGE_CONTROLLER_CONFIG_PERMISSION` | Sets the gas withheld from an inbound payload so a failed delivery can still be recorded as `Delivered` and stay retryable. `0` disables the reserve, in which case an out-of-gas payload reverts the whole delivery and leaves no record at all - recoverable only through the bridge's own manual execution. The cost of that record grows with payload size, so size it against the payloads you send. |
 | `updateExecutor(executor)` | `MANAGE_CONTROLLER_CONFIG_PERMISSION` | Repoints the controller at a different execution target. Must have code. The call validates **only** that the target has code - it cannot check that the new executor actually authorizes the controller to call `execute`. Repointing to a target that does not is the easiest way to silently brick the receive path; see the executor runbook below. |
 | `pause()` / `unpause()` | `PAUSE_PERMISSION` / `UNPAUSE_PERMISSION` | Halts and resumes the three message paths that move messages forward: `forwardMessage`, `receiveMessage` and `retryMessage`. The two directions carry **separate permissions**: a guardian can be trusted to freeze without being trusted to reopen, so a compromised guardian key cannot unpause mid-incident while a malicious message is still pending - the setup grants the guardian `PAUSE_PERMISSION` only, and `UNPAUSE_PERMISSION` stays with the DAO. `cancelMessage` is deliberately **not** gated - pausing exists to stop bad messages from executing, and cancelling is how you stop a pending one for good. If it were gated, the only way to cancel a pending message would be to unpause first, which reopens the paths you just closed. |
 | `sweep(token, to, amount)` | `SWEEP_PERMISSION` | Moves pre-funded fee assets out, typically back to the DAO. `address(0)` means native currency. |
 
-> ⚠️ **`RETRY_MESSAGE_PERMISSION` must never be granted to the address configured as the
-> controller's `executor`** - including the DAO when `executor = dao`. `retryMessage`
+> ⚠️ **`RETRY_MESSAGE_PERMISSION` must never be narrowed to the address configured as the
+> controller's `executor`** - including the DAO when `executor = dao`. Such a holder can
+> never use it, so an exclusive grant leaves no working retry path. `retryMessage`
 > calls back into the executor, so a retry initiated *from* the executor re-enters
 > `execute`:
 >
@@ -183,8 +205,10 @@ deliberately are not, so an incident can be recovered from while the system is p
 >   `Executor` - reentrancy on the executor.
 >
 > The executor's reentrancy guard makes every such retry revert, so the retry path is
-> unusable for exactly the holder it was granted to. This is why the setup grants
-> `RETRY_MESSAGE_PERMISSION` to `ANY_ADDR` (anyone) rather than the DAO: the retried
+> unusable for exactly that holder. The `ANY_ADDR` grant necessarily covers the executor
+> too; that is harmless precisely because it covers everyone else as well, leaving the
+> path usable by a caller who is not inside an `execute` frame. This is why the setup
+> grants `RETRY_MESSAGE_PERMISSION` to `ANY_ADDR` (anyone) rather than the DAO: the retried
 > payload was already authenticated by the bridge on delivery, and only a `Delivered`
 > (failed) message can be retried, so leaving it open is safe. If you narrow it, grant
 > it to an address that is **not** the configured executor - e.g. an ops multisig.
@@ -211,7 +235,9 @@ itself so it can read its own trusted-remote map.
 
 > The controller always calls `execute` with an `allowFailureMap` of `0`, so every action
 > in an inbound payload must succeed or the whole batch is captured as `Delivered` for
-> retry.
+> retry - provided `minFailedMessageGas` is large enough to pay for that record. With the
+> reserve disabled or undersized, an exhausting payload reverts the delivery outright and
+> leaves no record.
 
 **Asset-bearing actions.** The messaging layer moves instructions, never funds: only the
 encoded `Action[]` bytes cross the bridge, and the entire receive path - the adapter's
@@ -223,11 +249,12 @@ may `approve` and let a third party pull in one message, or receive then spend.
 
 Note that this makes **two pots**: the controller is pre-funded to pay bridge fees, and the
 executor is pre-funded to pay for actions. `sweep` only ever moves assets held by the
-controller. The pots are separate by default but not isolated by the code - a payload that
-deliberately targets the controller can still reach its fee float. Two ways that happens:
-a chained hop (an action calling `forwardMessage` on the destination controller) pays the
-onward bridge fee out of that controller's float, and under `executor = dao` an action
-executes as the DAO and so inherits the DAO's `SWEEP_PERMISSION`.
+controller. Under the shipped wiring the pots are isolated - the setup grants the
+controller's permissions to the DAO only, and a dedicated `Executor` gets none of them, so
+a payload cannot reach the fee float. They stop being isolated whenever the executor holds
+permissions on the controller: under `executor = dao` an action executes as the DAO and
+inherits its `SWEEP_PERMISSION`, and an executor granted `FORWARD_MESSAGE_PERMISSION` can
+start a chained hop whose onward bridge fee comes out of that controller's float.
 
 *Native value.* An action may target a payable function with `value > 0`: `payable` only
 governs whether a call can *carry* `msg.value`, not whether a contract can *spend* what it
@@ -292,9 +319,13 @@ Note the asymmetry in what each side stores: `updateConfig` records the remote
 remote **controller** (the authenticated sender). Confusing the two is the most
 common wiring mistake, and the two halves fail differently. Pointing the adapter's
 trusted remote at the remote *adapter* means inbound messages are rejected with
-`REMOTE_NOT_TRUSTED`. Getting `updateConfig`'s `remoteAdapter` wrong fails earlier
-and more opaquely: the bridge delivers to an address that cannot receive the call,
-so the trusted-remote check is never reached.
+`REMOTE_NOT_TRUSTED`. Getting `updateConfig`'s `remoteAdapter` wrong is worse,
+because nothing fails early: the send succeeds and the fee is spent. What happens
+on arrival depends on the address - a receiver that is not a contract, or does not
+advertise `IAny2EVMMessageReceiver`, is skipped by CCIP as a token-only transfer
+and the message is marked executed and silently lost; the remote controller or an
+unrelated contract reverts the delivery; another deployed adapter runs and rejects
+with `REMOTE_NOT_TRUSTED`. In every case the destination controller records nothing.
 
 ## Decommissioning a chain (runbook)
 

@@ -8,9 +8,15 @@ A DAO proposal on the origin chain calls `forwardMessage` with an encoded `Actio
 adapter. On the destination chain, the adapter authenticates the delivery and passes it to
 the `CrossChainController` there, which runs the actions through an `Executor`.
 
-The controller is the single entry point for both directions and holds all configuration.
-Adapters hold no routing state, so swapping bridges means deploying a new adapter and
-updating the controller's config.
+The controller is the single entry point for the send direction and holds the lane
+configuration: which local adapter serves a chain, and which remote address to send to.
+Inbound messages enter at the local adapter, which authenticates them and is the only
+caller `receiveMessage` accepts.
+
+Adapters hold no lane configuration, but they do carry their own trusted-remote map plus an
+immutable router, fee token and chain-id table — none of which has a setter. So swapping
+bridges, or fixing any adapter-level value, means deploying a new adapter on each side of
+the lane and updating both controllers' config.
 
 ## Flow
 
@@ -26,14 +32,18 @@ flowchart LR
 
 The send path is `delegatecall`ed, so the adapter's code runs as the controller: the bridge
 fee is paid from the controller's own balance and the bridge attributes the message to the
-controller's address. Adapters never custody funds, and the destination trusts the remote
-*controller* rather than the adapter.
+controller's address. No protocol path routes funds through an adapter — the controller
+pays, and the adapter's balance stays empty — so pre-fund the **controller**, never the
+adapter: assets sent directly to an adapter are stranded, as adapters have no rescue path.
+The destination trusts the remote *controller* rather than the adapter.
 
 The receive path is a plain `CALL`, so the adapter runs as itself and reads its own
 trusted-remote map.
 
-A lane may also target the chain it lives on, in which case no bridge is involved. See
-[Same Chain Delivery](./specs/SPEC.md#same-chain-delivery).
+A lane may also target the chain it lives on. The controller's config allows it, but
+delivering without a bridge needs a purpose-built loopback adapter — none ships in `src/`,
+and `CCIPAdapter` rejects a same-chain destination because CCIP serves no lane to its own
+chain. See [Same Chain Delivery](./specs/SPEC.md#same-chain-delivery).
 
 ## Contracts
 
@@ -95,15 +105,19 @@ controller.
 1. Install `CrossChainController` on both chains.
 2. Deploy an adapter on each chain, pointing at the local controller and trusting the
    remote **controller**.
-3. Call `updateConfig` on each controller with the remote chain id and
-   `{ localAdapter, remoteAdapter }`.
+3. Call `updateConfig` on each controller with an array of remote chain ids and a
+   matching array of `{ localAdapter, remoteAdapter }` configs — it is batch-only,
+   and both arrays must be the same length.
 
 Note the asymmetry: `updateConfig` records the remote **adapter** (the bridge-level
 receiver), while the adapter constructor records the remote **controller** (the
 authenticated sender). Confusing the two is the most common wiring mistake. Pointing the
 adapter's trusted remote at the remote *adapter* makes every inbound message fail with
-`REMOTE_NOT_TRUSTED`; getting `updateConfig`'s `remoteAdapter` wrong fails earlier and more
-opaquely, because the bridge delivers to an address that cannot receive.
+`REMOTE_NOT_TRUSTED`. Getting `updateConfig`'s `remoteAdapter` wrong is worse: nothing fails
+early, the send succeeds and the fee is spent. What happens on arrival depends on the
+address — a non-contract is skipped by CCIP and the message is silently lost, the remote
+controller reverts the delivery, another adapter rejects it — but in every case the
+destination controller records nothing.
 
 Full step-by-step instructions are in [Deployment](./specs/SPEC.md#deployment).
 
@@ -119,8 +133,11 @@ against what is held. `sweep` moves the funds back out.
 so whatever an action spends must be available when it runs — normally by pre-funding the
 executor. An underfunded action is captured as `Delivered` and can be retried once funded.
 
-The pots are separate by default but not isolated: a payload that deliberately targets the
-controller can still reach its fee float. See
+Under the shipped wiring the pots are isolated: a dedicated `Executor` holds none of the
+controller's permissions, so a payload cannot reach the fee float. They stop being isolated
+when the executor holds permissions on the controller — under `executor = dao` an action
+runs as the DAO and inherits its `SWEEP`/`FORWARD_MESSAGE` permissions, and an executor
+granted `FORWARD_MESSAGE_PERMISSION` can start a chained hop paid from the local float. See
 [Asset-bearing actions](./specs/SPEC.md#executor) for that and for the ERC20 caveat.
 
 ## Documentation
@@ -135,4 +152,4 @@ Report vulnerabilities to sirt@aragon.org.
 
 ## License
 
-AGPL-3.0-or-later
+AGPL-3.0-or-later, except `src/adapters/IBaseAdapter.sol`, which is MIT.

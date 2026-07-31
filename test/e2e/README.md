@@ -23,14 +23,14 @@ makes them fail. Every suite here goes through a real OSx `DAO`, except
 
 | File | What it covers |
 |---|---|
-| `Base.sol` | The two-stack (optionally three-stack) fixture every suite inherits |
+| `Base.sol` | The two-stack (optionally three-stack) fixture every suite inherits, except `CrossChainRoundTrip.t.sol`, which stands up its own equivalent on the DAO mock |
 | `HappyPath.t.sol` | Both directions, multi-action and value-bearing payloads, out-of-order delivery, multi-lane, fees |
-| `Authorization.t.sol` | Every gate, against a real `PermissionManager`; grant/revoke round trips; the pause/unpause split |
-| `RetryAndFailures.t.sol` | Both recovery layers, and every way a delivered payload can fail |
+| `Authorization.t.sol` | The lane, forward and receive gates against a real `PermissionManager`; a grant/revoke round trip; the pause/unpause split. Not covered here: `updateExecutor`, `updateMinFailedMessageGas`, `cancelMessage`, the upgrade gate; `retryMessage`'s gate is in `RetryAndFailures.t.sol` |
+| `RetryAndFailures.t.sol` | Both recovery layers, and the ways a delivered payload can fail short of gas exhaustion (that is `GasLimits.t.sol`); also adapter-rotation and bridge-redelivery replays |
 | `FeesAndOps.t.sol` | Native and ERC20 fee lanes, starvation, broken lanes, sweeping |
 | `GasLimits.t.sol` | The three gas regimes, and the A/B proof that `minFailedMessageGas` is load-bearing |
 | `Reentrancy.t.sol` | What an authenticated payload can and cannot do mid-execution; legitimate multi-hop chaining |
-| `ReplayAndIdentity.t.sol` | Transaction identity, and every way a message might be replayed where it does not belong |
+| `ReplayAndIdentity.t.sol` | Transaction identity, and replaying a message where it does not belong — across chains, lanes and controllers |
 | `fork/CCIPRealRouter.t.sol` | The stack against REAL production CCIP Router bytecode on mainnet and Base |
 | `CrossChainRoundTrip.t.sol` | A round trip against the DAO mock |
 
@@ -70,9 +70,10 @@ highest fidelity available without the DON.
 `test_fork_everyMappedSelectorIsALiveLane` is the reason the fork suite earns
 its keep: `CCIPAdapter`'s chain-id/selector table is compiled in and cannot be
 fixed without a redeploy, so a wrong entry is only discoverable against a live
-Router. It is written as a sweep over candidate chain ids rather than a
-hardcoded list, so it keeps covering the whole table as chains are added to or
-removed from `ChainIds`.
+Router. Its coverage is **pinned, not floored**: `_MAPPED_CHAIN_COUNT` and the
+candidate pair list are hardcoded, so adding or removing a chain fails the test
+until both are updated. That is deliberate — it forces a live-lane check on every
+table change rather than silently skipping the new entry.
 
 ## Reading the tests
 
@@ -80,6 +81,10 @@ removed from `ChainIds`.
 the payload's:
 
 - `success == true` with state `Delivered` — the payload failed and was caught.
-  Recovery is `retryMessage`, which is **permissioned**.
-- `success == false` with state `None` — the delivery itself failed and nothing
-  was stored. CCIP leaves the message manually executable **by anyone**.
+  Recovery is `retryMessage`, which is permission-gated — though the setup grants
+  `RETRY_MESSAGE_PERMISSION` to `ANY_ADDR`, so out of the box anyone can retry.
+  These suites narrow it deliberately.
+- `success == false` — the delivery itself failed and nothing *new* was stored.
+  On a first arrival the state is still `None`; on redelivery of an
+  already-recorded message the stored state is unchanged. CCIP leaves the message
+  manually executable **by anyone**.
