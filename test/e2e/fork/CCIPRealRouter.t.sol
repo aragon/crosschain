@@ -486,7 +486,7 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
     ///      gains or loses a chain -- and when you do, add the new chain to
     ///      `_chainSelectorPairs`, or the count will match while the new entry
     ///      goes unchecked.
-    uint256 internal constant _MAPPED_CHAIN_COUNT = 10;
+    uint256 internal constant _MAPPED_CHAIN_COUNT = 15;
 
     /// @dev `(standard chain id, CCIP chain selector)` ground truth, transcribed
     ///      from Chainlink's `chain-selectors` registry:
@@ -503,7 +503,7 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
     ///      `CCIPAdapter` -- copying from the code under test would make the
     ///      ground-truth check circular and worthless.
     function _chainSelectorPairs() internal pure returns (uint256[2][] memory pairs) {
-        pairs = new uint256[2][](20);
+        pairs = new uint256[2][](24);
         pairs[0] = [uint256(1), 5009297550715157269]; // Ethereum
         pairs[1] = [uint256(10), 3734403246176062136]; // Optimism
         pairs[2] = [uint256(25), 1456215246176062136]; // Cronos
@@ -518,12 +518,16 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
         pairs[11] = [uint256(480), 2049429975587534727]; // World Chain
         pairs[12] = [uint256(999), 2442541497099098535]; // HyperEVM
         pairs[13] = [uint256(1868), 12505351618335765396]; // Soneium
-        pairs[14] = [uint256(5000), 1556008542357238666]; // Mantle
-        pairs[15] = [uint256(8453), 15971525489660198786]; // Base
-        pairs[16] = [uint256(9745), 9335212494177455608]; // Plasma
-        pairs[17] = [uint256(42161), 4949039107694359620]; // Arbitrum One
-        pairs[18] = [uint256(42220), 1346049177634351622]; // Celo
-        pairs[19] = [uint256(43114), 6433500567565415381]; // Avalanche
+        pairs[14] = [uint256(4326), 6093540873831549674]; // MegaETH
+        pairs[15] = [uint256(5000), 1556008542357238666]; // Mantle
+        pairs[16] = [uint256(8453), 15971525489660198786]; // Base
+        pairs[17] = [uint256(9745), 9335212494177455608]; // Plasma
+        pairs[18] = [uint256(42161), 4949039107694359620]; // Arbitrum One
+        pairs[19] = [uint256(42220), 1346049177634351622]; // Celo
+        pairs[20] = [uint256(43114), 6433500567565415381]; // Avalanche
+        pairs[21] = [uint256(57073), 3461204551265785888]; // Ink
+        pairs[22] = [uint256(59144), 4627098889531055414]; // Linea
+        pairs[23] = [uint256(747474), 2459028469735686113]; // Katana
     }
 
     /// @dev Asserts the address still exposes a CCIP `Router` `typeAndVersion`.
