@@ -132,7 +132,7 @@ contract CrossChainFeesAndOpsE2ETest is CrossChainE2EBase {
         vm.deal(address(origin.controller), 0);
 
         vm.prank(address(origin.dao));
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(Errors.INSUFFICIENT_FEE_BALANCE.selector, address(0), FEE, 0));
         origin.controller.forwardMessage(destination.chainId, GAS_LIMIT, _cancelPayload(destination));
 
         vm.deal(address(origin.controller), 1 ether);

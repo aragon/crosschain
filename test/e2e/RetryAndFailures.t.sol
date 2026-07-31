@@ -105,6 +105,14 @@ contract CrossChainRetryAndFailuresE2ETest is CrossChainE2EBase {
     ///      `executor = dao`, so the trap is reachable in a real deployment; the
     ///      setup grants retry to `ANY_ADDR` precisely so an ordinary EOA can
     ///      call the controller directly instead.
+    ///
+    ///      ON THE ASSERTION. `DAO.execute` swallows the inner revert reason and
+    ///      re-raises `ActionFailed(0)`, so this cannot assert the reentrancy
+    ///      guard specifically -- any inner failure produces the same selector.
+    ///      What isolates the cause is
+    ///      `test_failure_missingExecutePermissionFailsThenRetriesAfterGrant`
+    ///      below, which shows this exact wiring retries fine through a direct
+    ///      ops call. The caller is then the only variable left between the two.
     function test_retry_daoAsExecutorCannotRetryThroughAProposal() public {
         _useDaoAsExecutor(destination);
         destination.dao

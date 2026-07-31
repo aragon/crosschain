@@ -382,33 +382,42 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
         _assertIsARouter(BASE_ROUTER, "base");
     }
 
-    /// @notice EVERY chain in the adapter's hardcoded selector table is a live
-    ///         CCIP lane from mainnet, and the table inverts cleanly.
+    /// @notice EVERY chain in the adapter's hardcoded selector table carries the
+    ///         selector Chainlink actually assigned it, is a live CCIP lane from
+    ///         mainnet, and inverts cleanly.
     /// @dev THE REASON THIS SUITE EXISTS. The table is compiled in and cannot be
-    ///      fixed without redeploying the adapter, so a wrong entry is only
-    ///      discoverable here. A failure means either a typo in
-    ///      `toNativeChainId` or a lane Chainlink has retired.
+    ///      fixed without redeploying the adapter, so a wrong entry has to be
+    ///      caught before deployment.
     ///
-    ///      Written as a SWEEP over candidate chain ids rather than a hardcoded
-    ///      list, so it keeps testing the whole table as chains are added to or
-    ///      removed from `ChainIds` -- editing that library is exactly when this
-    ///      check matters most, and a list that has to be kept in sync would go
-    ///      stale at precisely that moment. `_MIN_MAPPED_CHAINS` keeps an
-    ///      emptied or unreachable table from passing vacuously.
+    ///      THREE INDEPENDENT CHECKS, because no one of them is sufficient:
+    ///
+    ///      1. GROUND TRUTH. The selector must equal the value in
+    ///         `_chainSelectorPairs`, transcribed from Chainlink's
+    ///         `chain-selectors` registry. This is the only check that catches a
+    ///         CONSISTENTLY mis-paired entry -- copying the wrong row of the
+    ///         directory, so a chain is mapped to some OTHER live chain's
+    ///         selector. Such an entry is a live lane and inverts perfectly, so
+    ///         checks 2 and 3 both pass while messages silently route to the
+    ///         wrong chain. That is the likeliest typo when adding a chain, and
+    ///         the reason this check leads.
+    ///      2. LIVENESS. The real mainnet Router must still serve the lane, which
+    ///         ground truth alone cannot tell you -- Chainlink retires lanes.
+    ///      3. INVERSION. `fromNativeChainId` must undo `toNativeChainId`, since
+    ///         the two tables are maintained by hand and separately.
+    ///
+    ///      COVERAGE IS PINNED, NOT FLOORED. `_MAPPED_CHAIN_COUNT` is an exact
+    ///      equality: a chain silently dropping out of the table fails here
+    ///      rather than quietly shrinking what is checked. Editing `ChainIds` is
+    ///      meant to require bumping that constant -- the friction is the point.
     function test_fork_everyMappedSelectorIsALiveLane() public withForks {
         vm.selectFork(ethFork);
 
-        uint256[] memory candidates = _candidateChainIds();
+        uint256[2][] memory pairs = _chainSelectorPairs();
         uint256 mapped;
 
-        for (uint256 i = 0; i < candidates.length; i++) {
-            uint256 chainId = candidates[i];
-
-            // A Router serves no lane to its OWN chain: `isChainSupported` is
-            // false for Ethereum on the Ethereum Router, and that is correct,
-            // not stale. The same-chain case is a local concern, covered by
-            // `test/unit/CrossChainController/sameChainLane.t.sol`.
-            if (chainId == ChainIds.ETHEREUM) continue;
+        for (uint256 i = 0; i < pairs.length; i++) {
+            uint256 chainId = pairs[i][0];
+            uint64 expectedSelector = uint64(pairs[i][1]);
 
             uint64 selector;
             try origin.adapter.toNativeChainId(chainId) returns (uint256 nativeChainId) {
@@ -420,18 +429,38 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
 
             mapped++;
 
-            assertTrue(
-                IRouterClient(MAINNET_ROUTER).isChainSupported(selector),
-                string.concat("no live mainnet lane for chain ", vm.toString(chainId))
+            // 1. Ground truth.
+            assertEq(
+                uint256(selector),
+                uint256(expectedSelector),
+                string.concat("wrong CCIP selector for chain ", vm.toString(chainId))
             );
+
+            // 3. Inversion.
             assertEq(
                 origin.adapter.fromNativeChainId(selector),
                 chainId,
                 string.concat("the table must invert for chain ", vm.toString(chainId))
             );
+
+            // 2. Liveness. A Router serves no lane to its OWN chain:
+            // `isChainSupported` is false for Ethereum on the Ethereum Router,
+            // and that is correct, not stale. The same-chain case is a local
+            // concern, covered by `test/unit/CrossChainController/sameChainLane.t.sol`.
+            if (chainId == ChainIds.ETHEREUM) continue;
+
+            assertTrue(
+                IRouterClient(MAINNET_ROUTER).isChainSupported(selector),
+                string.concat("no live mainnet lane for chain ", vm.toString(chainId))
+            );
         }
 
-        assertGe(mapped, _MIN_MAPPED_CHAINS, "the candidate sweep found suspiciously few mapped chains");
+        assertEq(
+            mapped,
+            _MAPPED_CHAIN_COUNT,
+            "the adapter maps a different number of chains than expected -- update _MAPPED_CHAIN_COUNT, and make sure "
+            "any newly mapped chain is present in _chainSelectorPairs so it is actually checked"
+        );
     }
 
     /// @notice The adapter is recognised as a CCIP receiver by the real Router's
@@ -448,37 +477,53 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
     // Helpers.
     // -------------------------------------------------------------------------
 
-    /// @dev A floor on how many of the candidates below must resolve, so a table
-    ///      that has been emptied or made unreachable cannot pass this suite by
-    ///      simply mapping nothing.
-    uint256 internal constant _MIN_MAPPED_CHAINS = 8;
+    /// @dev EXACTLY how many chains `CCIPAdapter.toNativeChainId` must map, of
+    ///      the pairs below.
+    ///
+    ///      Deliberately an exact count, not a floor: with a floor, a chain
+    ///      quietly disappearing from the table still passes, and the suite
+    ///      silently checks less than it advertises. Bump this when `ChainIds`
+    ///      gains or loses a chain -- and when you do, add the new chain to
+    ///      `_chainSelectorPairs`, or the count will match while the new entry
+    ///      goes unchecked.
+    uint256 internal constant _MAPPED_CHAIN_COUNT = 10;
 
-    /// @dev Every chain id `CCIPAdapter`'s table has held or plausibly will.
-    ///      Ids absent from the table are skipped, so this list may safely be a
-    ///      superset -- which is the point: it does not need updating when the
-    ///      table changes, only when a brand-new chain is added.
-    function _candidateChainIds() internal pure returns (uint256[] memory ids) {
-        ids = new uint256[](20);
-        ids[0] = 1; // Ethereum
-        ids[1] = 10; // Optimism
-        ids[2] = 25; // Cronos
-        ids[3] = 56; // BNB
-        ids[4] = 100; // Gnosis
-        ids[5] = 130; // Unichain
-        ids[6] = 137; // Polygon
-        ids[7] = 143; // Monad
-        ids[8] = 146; // Sonic
-        ids[9] = 250; // Fantom
-        ids[10] = 324; // zkSync Era
-        ids[11] = 480; // World Chain
-        ids[12] = 999; // HyperEVM
-        ids[13] = 1868; // Soneium
-        ids[14] = 5000; // Mantle
-        ids[15] = 8453; // Base
-        ids[16] = 9745; // Plasma
-        ids[17] = 42161; // Arbitrum One
-        ids[18] = 42220; // Celo
-        ids[19] = 43114; // Avalanche
+    /// @dev `(standard chain id, CCIP chain selector)` ground truth, transcribed
+    ///      from Chainlink's `chain-selectors` registry:
+    ///      https://github.com/smartcontractkit/chain-selectors/blob/main/selectors.yml
+    ///
+    ///      A SUPERSET of what the adapter maps: ids absent from the adapter's
+    ///      table are skipped, so chains can be added to or removed from
+    ///      `ChainIds` without editing this, as long as the chain is listed
+    ///      here. Entries beyond the adapter's current table are candidates for
+    ///      future lanes, pre-verified so adding one is a one-line change.
+    ///
+    ///      These values are the AUTHORITY the adapter is checked against, so
+    ///      they must be copied from the registry rather than from
+    ///      `CCIPAdapter` -- copying from the code under test would make the
+    ///      ground-truth check circular and worthless.
+    function _chainSelectorPairs() internal pure returns (uint256[2][] memory pairs) {
+        pairs = new uint256[2][](20);
+        pairs[0] = [uint256(1), 5009297550715157269]; // Ethereum
+        pairs[1] = [uint256(10), 3734403246176062136]; // Optimism
+        pairs[2] = [uint256(25), 1456215246176062136]; // Cronos
+        pairs[3] = [uint256(56), 11344663589394136015]; // BNB
+        pairs[4] = [uint256(100), 465200170687744372]; // Gnosis
+        pairs[5] = [uint256(130), 1923510103922296319]; // Unichain
+        pairs[6] = [uint256(137), 4051577828743386545]; // Polygon
+        pairs[7] = [uint256(143), 8481857512324358265]; // Monad
+        pairs[8] = [uint256(146), 1673871237479749969]; // Sonic
+        pairs[9] = [uint256(250), 3768048213127883732]; // Fantom
+        pairs[10] = [uint256(324), 1562403441176082196]; // zkSync Era
+        pairs[11] = [uint256(480), 2049429975587534727]; // World Chain
+        pairs[12] = [uint256(999), 2442541497099098535]; // HyperEVM
+        pairs[13] = [uint256(1868), 12505351618335765396]; // Soneium
+        pairs[14] = [uint256(5000), 1556008542357238666]; // Mantle
+        pairs[15] = [uint256(8453), 15971525489660198786]; // Base
+        pairs[16] = [uint256(9745), 9335212494177455608]; // Plasma
+        pairs[17] = [uint256(42161), 4949039107694359620]; // Arbitrum One
+        pairs[18] = [uint256(42220), 1346049177634351622]; // Celo
+        pairs[19] = [uint256(43114), 6433500567565415381]; // Avalanche
     }
 
     /// @dev Asserts the address still exposes a CCIP `Router` `typeAndVersion`.

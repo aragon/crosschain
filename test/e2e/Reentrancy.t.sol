@@ -2,6 +2,7 @@
 
 pragma solidity ^0.8.17;
 
+import { DaoUnauthorized } from "@aragon/osx-commons-contracts/src/permission/auth/auth.sol";
 import { Executor as CommonsExecutor } from "@aragon/osx-commons-contracts/src/executors/Executor.sol";
 
 import { ICrossChainController } from "@src/ICrossChainController.sol";
@@ -119,6 +120,23 @@ contract CrossChainReentrancyE2ETest is CrossChainE2EBase {
         _deliverNext(origin, destination);
 
         assertFalse(probe.lastSuccess(), "the probe holds no retry permission");
+
+        // The REASON matters, and asserting it is what makes this test distinct
+        // from the one below. Without it, deleting `auth(RETRY_MESSAGE_PERMISSION_ID)`
+        // from `retryMessage` would leave this test green: the nested call would
+        // still fail, just with `ReentrantCall` from the executor guard instead.
+        assertEq(
+            probe.lastReturnData(),
+            abi.encodeWithSelector(
+                DaoUnauthorized.selector,
+                address(destination.dao),
+                address(destination.controller),
+                address(probe),
+                Permissions.RETRY_MESSAGE_PERMISSION_ID
+            ),
+            "the permission check must be what refuses it, not the reentrancy guard"
+        );
+
         _assertDelivered(destination, parkedId);
         assertEq(destination.target.cancellations(), 0);
     }

@@ -360,7 +360,29 @@ contract CrossChainAuthorizationE2ETest is CrossChainE2EBase {
         (, bool success) = _deliverNext(origin, destination);
 
         assertFalse(success, "a paused controller must refuse the delivery");
+
+        // WHY it was refused, not merely that it was: the happy-path suite
+        // proves this lane delivers when unpaused, but only the revert reason
+        // rules out the delivery having failed for some unrelated cause.
+        assertEq(
+            origin.router.lastDeliveryReturnData(),
+            abi.encodeWithSignature("Error(string)", "Pausable: paused"),
+            "the pause must be what refused it"
+        );
+
         assertEq(destination.target.cancellations(), 0, "no action may execute while paused");
+
+        // And it is only the pause: unpausing lets the very same queued message
+        // through, so nothing about the message itself was wrong.
+        _on(destination);
+        vm.prank(address(destination.dao));
+        destination.controller.unpause();
+        _on(origin);
+
+        (, bool afterUnpause) = _deliverNext(origin, destination);
+
+        assertTrue(afterUnpause, "the same message must deliver once unpaused");
+        assertEq(destination.target.cancellations(), 1);
     }
 
     /// @notice The guardian holds `PAUSE` and NOT `UNPAUSE`, so it cannot reopen
