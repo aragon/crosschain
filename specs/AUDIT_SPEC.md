@@ -32,3 +32,8 @@ executes the actions through an `Executor`.
 
 [SPEC.md](./SPEC.md) describes the intended protocol behaviour in full and
 should be read as the specification the implementation is audited against.
+
+[test/e2e/README.md](../test/e2e/README.md) documents the end-to-end suites,
+which carry a message through both stacks against a real OSx `DAO` and, in the
+fork suite, against production CCIP Router bytecode. They are out of scope
+themselves, but are the most direct executable statement of intended behaviour.

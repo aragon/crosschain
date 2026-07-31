@@ -102,9 +102,16 @@ Full step-by-step instructions are in [Deployment](./specs/SPEC.md#deployment).
 
 ## Funding
 
-The controller pays bridge fees from its own balance. Pre-fund it with the fee token
+There are two separate pots.
+
+**The controller** pays bridge fees from its own balance. Pre-fund it with the fee token
 (`address(0)` means native currency) and use `quoteFee` to check the required amount
 against what is held. `sweep` moves the funds back out.
+
+**The executor** pays for the actions themselves. Messages carry instructions, never funds,
+so any native value or tokens an action spends must already sit on the executor when the
+message arrives. An underfunded action is captured as `Delivered` and can be retried once
+funded — see [Asset-bearing actions](./specs/SPEC.md#executor) for the ERC20 caveat.
 
 ## Documentation
 

@@ -213,16 +213,40 @@ itself so it can read its own trusted-remote map.
 > in an inbound payload must succeed or the whole batch is captured as `Delivered` for
 > retry.
 
-**Value-bearing actions.** The messaging layer moves instructions, never funds: only the
+**Asset-bearing actions.** The messaging layer moves instructions, never funds: only the
 encoded `Action[]` bytes cross the bridge, and the entire receive path - the adapter's
-bridge callback, `receiveMessage`, `executeActions`, `execute` - is non-payable. An
-action may still target a payable function with `value > 0`: `payable` only governs
-whether a call can *carry* `msg.value`, not whether a contract can *spend* what it
+bridge callback, `receiveMessage`, `executeActions`, `execute` - is non-payable. Assets
+must already sit on the executor when the message arrives. Funding is a separate, prior
+operation; it is never part of the message.
+
+Note that this makes **two separate pots**: the controller is pre-funded to pay bridge
+fees, and the executor is pre-funded to pay for actions. Executing an action never touches
+the controller's fee float, and `sweep` only moves the controller's.
+
+*Native value.* An action may target a payable function with `value > 0`: `payable` only
+governs whether a call can *carry* `msg.value`, not whether a contract can *spend* what it
 already holds, so the executor pays `action.value` out of its own balance at execution
-time. This is why `receive()` exists - the executor is topped up in advance and the cross-chain action spends from that
-balance. Funding is a separate, prior operation; it is never part of the message. If the
-balance is short, the action fails, the zero `allowFailureMap` reverts the whole batch,
-and the message is captured as `Delivered` - fund the executor and `retryMessage`.
+time. This is why `receive()` exists - the executor is topped up in advance and the action
+spends from that balance. If the balance is short, the action fails, the zero
+`allowFailureMap` reverts the whole batch, and the message is captured as `Delivered` -
+fund the executor and `retryMessage`.
+
+*ERC20.* A token action is just `Action{to: token, value: 0, data: transfer(...)}`, so the
+same rule holds. Two things differ from native value:
+
+- Holding tokens needs no code support. An ERC20 balance lives on the token's own ledger,
+  so any executor address can hold tokens - `receive()` is irrelevant here.
+- **Failure is not guaranteed to be loud.** `Executor` runs each action with a raw call and
+  branches only on the call's `success` flag; it never inspects returndata. A token that
+  returns `false` instead of reverting is therefore recorded as a *successful* action, and
+  the message is marked `Executed` with nothing moved. `Executed` is terminal: retry and
+  cancel both require `Delivered`, and redelivery is refused, so that message can never be
+  re-run - even once the tokens arrive. Only a new message from the origin chain recovers
+  it. Native value has no equivalent; an underfunded `call{value: x}` always fails loudly.
+
+  The mitigation belongs in the **payload**, not the messaging layer: have the action route
+  the transfer through a callee that uses `SafeERC20`, which turns the silent failure back
+  into a revert, and therefore into a retryable `Delivered` message.
 
 ## Deployment
 
