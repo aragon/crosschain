@@ -62,7 +62,8 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
     )
         BaseAdapter(_crosschainController, _trustedRemoteConfigs)
     {
-        if (_ccipRouter.code.length == 0) revert Errors.HAS_NO_CODE(_feeToken);
+        // Also covers `address(0)`, which trivially has no code.
+        if (_ccipRouter.code.length == 0) revert Errors.HAS_NO_CODE(_ccipRouter);
 
         // `address(0)` is the native currency and is always valid.
         // Anything else must be a deployed token contract.

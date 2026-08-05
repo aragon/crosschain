@@ -60,16 +60,32 @@ contract CCIPAdapterConstructorTest is CCIPAdapterBase {
         assertEq(zeroRemoteAdapter.trustedRemote(CHAIN_BASE), address(0));
     }
 
+    /// @dev The zero address trivially has no code, so it is caught by the same
+    ///      guard as an EOA rather than by a dedicated zero check.
     function test_revertsIfRouterIsZeroAddress() public {
-        vm.expectRevert(Errors.ZERO_ADDRESS.selector);
+        vm.expectRevert(abi.encodeWithSelector(Errors.HAS_NO_CODE.selector, address(0)));
         new CCIPAdapter(address(controller), address(0), address(0), new BaseAdapter.TrustedRemoteConfig[](0));
     }
 
+    /// @dev A codeless router would make every send revert on the first call
+    ///      into it, so it is rejected at construction. The revert must name the
+    ///      ROUTER -- naming the fee token would send a deployer chasing the
+    ///      wrong argument.
+    function test_revertsIfRouterIsEOA() public {
+        address eoaRouter = makeAddr("EOA_ROUTER");
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.HAS_NO_CODE.selector, eoaRouter));
+        new CCIPAdapter(address(controller), eoaRouter, address(0), new BaseAdapter.TrustedRemoteConfig[](0));
+    }
+
+    /// @dev The fee-token guard is reached only once the router passes, so this
+    ///      passes a REAL router: with an EOA router the constructor would
+    ///      revert earlier and this would assert nothing about the fee token.
     function test_revertsIfFeeTokenIsSpecified_ButIsEOA() public {
         address feeToken = makeAddr("FEE_TOKEN");
 
         vm.expectRevert(abi.encodeWithSelector(Errors.HAS_NO_CODE.selector, feeToken));
-        new CCIPAdapter(address(controller), makeAddr("Adapter"), feeToken, new BaseAdapter.TrustedRemoteConfig[](0));
+        new CCIPAdapter(address(controller), address(router), feeToken, new BaseAdapter.TrustedRemoteConfig[](0));
     }
 
     function test_wiresUpConfiguredTrustedRemoteControllerAndSelector() public view {
