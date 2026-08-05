@@ -614,7 +614,7 @@ abstract contract CrossChainE2EBase is Test, ICrossChainControllerEvents {
     /// @notice Asserts a transaction reached `Executed` on the destination.
     function _assertExecuted(Stack memory _to, bytes32 _txId) internal view {
         assertEq(
-            uint256(_to.controller.getTransaction(_txId).state),
+            uint256(_to.controller.getTransactionState(_txId)),
             uint256(TransactionState.Executed),
             "transaction should be Executed"
         );
@@ -624,7 +624,7 @@ abstract contract CrossChainE2EBase is Test, ICrossChainControllerEvents {
     ///         is awaiting `retryMessage`.
     function _assertDelivered(Stack memory _to, bytes32 _txId) internal view {
         assertEq(
-            uint256(_to.controller.getTransaction(_txId).state),
+            uint256(_to.controller.getTransactionState(_txId)),
             uint256(TransactionState.Delivered),
             "transaction should be Delivered (failed, retryable)"
         );
@@ -633,7 +633,7 @@ abstract contract CrossChainE2EBase is Test, ICrossChainControllerEvents {
     /// @notice Asserts a transaction was cancelled.
     function _assertCancelled(Stack memory _to, bytes32 _txId) internal view {
         assertEq(
-            uint256(_to.controller.getTransaction(_txId).state),
+            uint256(_to.controller.getTransactionState(_txId)),
             uint256(TransactionState.Cancelled),
             "transaction should be Cancelled"
         );
@@ -643,7 +643,7 @@ abstract contract CrossChainE2EBase is Test, ICrossChainControllerEvents {
     ///         the state after a BRIDGE-level delivery failure.
     function _assertUnknown(Stack memory _to, bytes32 _txId) internal view {
         assertEq(
-            uint256(_to.controller.getTransaction(_txId).state),
+            uint256(_to.controller.getTransactionState(_txId)),
             uint256(TransactionState.None),
             "transaction should be unknown to the destination"
         );

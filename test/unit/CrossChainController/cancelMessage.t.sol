@@ -20,7 +20,7 @@ contract CrossChainControllerCancelMessageTest is CrossChainControllerBase {
             )
         );
         vm.prank(bob);
-        controller.cancelMessage(TransactionLib.encode(failedTx));
+        controller.cancelMessage(TransactionLib.id(failedTx));
     }
 
     function test_revertsForTransactionThatWasNeverDelivered() public {
@@ -30,22 +30,22 @@ contract CrossChainControllerCancelMessageTest is CrossChainControllerBase {
 
         vm.expectRevert(abi.encodeWithSelector(Errors.MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS.selector, txId));
         vm.prank(alice);
-        controller.cancelMessage(TransactionLib.encode(unknownTx));
+        controller.cancelMessage(TransactionLib.id(unknownTx));
     }
 
     function test_cancelsDeliveredMessageAndSetsStateCancelled() public {
         _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
         (Transaction memory failedTx, bytes32 txId) = _causeFailure(71);
 
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.Delivered));
 
         vm.expectEmit(true, false, false, false, address(controller));
         emit MessageCancelled(txId);
 
         vm.prank(alice);
-        controller.cancelMessage(TransactionLib.encode(failedTx));
+        controller.cancelMessage(TransactionLib.id(failedTx));
 
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Cancelled));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.Cancelled));
     }
 
     /// @dev Cancel is terminal: once cancelled, the same message can
@@ -55,7 +55,7 @@ contract CrossChainControllerCancelMessageTest is CrossChainControllerBase {
         (Transaction memory failedTx, bytes32 txId) = _causeFailure(72);
 
         vm.prank(alice);
-        controller.cancelMessage(TransactionLib.encode(failedTx));
+        controller.cancelMessage(TransactionLib.id(failedTx));
 
         // Retry now rejects it: state is `Cancelled`, not `Delivered`.
         vm.expectRevert(abi.encodeWithSelector(Errors.MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS.selector, txId));
@@ -69,7 +69,7 @@ contract CrossChainControllerCancelMessageTest is CrossChainControllerBase {
         (Transaction memory failedTx, bytes32 txId) = _causeFailure(73);
 
         vm.prank(alice);
-        controller.cancelMessage(TransactionLib.encode(failedTx));
+        controller.cancelMessage(TransactionLib.id(failedTx));
 
         // The local adapter redelivering the same envelope must revert: the
         // dedup guard rejects any state other than `None`.
@@ -88,12 +88,12 @@ contract CrossChainControllerCancelMessageTest is CrossChainControllerBase {
 
         vm.prank(address(adapterA));
         controller.receiveMessage(74, TransactionLib.encode(okTx), CHAIN_ID);
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.Executed));
 
         // An executed message is not cancellable.
         vm.expectRevert(abi.encodeWithSelector(Errors.MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS.selector, txId));
         vm.prank(alice);
-        controller.cancelMessage(TransactionLib.encode(okTx));
+        controller.cancelMessage(TransactionLib.id(okTx));
     }
 
     function _causeFailure(uint256 _nonce) internal returns (Transaction memory failedTx, bytes32 txId) {

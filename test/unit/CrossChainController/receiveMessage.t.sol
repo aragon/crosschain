@@ -88,12 +88,12 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
         vm.prank(address(adapterA));
         controller.receiveMessage(1, encodedTx, CHAIN_ID);
 
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.None));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.None));
 
         // The same envelope through the RIGHT lane still delivers.
         vm.prank(address(adapterB));
         controller.receiveMessage(1, encodedTx, OTHER_CHAIN_ID);
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.Executed));
     }
 
     function test_succeedsForRegisteredLocalAdapter() public {
@@ -117,7 +117,7 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
         // First delivery fails execution and is stored as `Delivered`.
         vm.prank(address(adapterA));
         controller.receiveMessage(7, encodedTx, CHAIN_ID);
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.Delivered));
 
         // Redelivering the same envelope (same txId) must revert, not
         // overwrite/duplicate it -- regardless of the bridge messageId.
@@ -142,7 +142,7 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
         bytes32 returned1 = controller.receiveMessage(1, encodedTx1, CHAIN_ID);
 
         assertEq(returned1, txId1);
-        assertEq(uint256(controller.getTransaction(txId1).state), uint256(TransactionState.Executed));
+        assertEq(uint256(controller.getTransactionState(txId1)), uint256(TransactionState.Executed));
         assertEq(counter.count(), 1);
 
         // Second delivery: EVERYTHING identical except nonce (1 -> 2). The
@@ -160,7 +160,7 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
         );
 
         assertEq(returned2, txId2);
-        assertEq(uint256(controller.getTransaction(txId2).state), uint256(TransactionState.Executed));
+        assertEq(uint256(controller.getTransactionState(txId2)), uint256(TransactionState.Executed));
         // The action ran a second time.
         assertEq(counter.count(), 2);
     }
@@ -189,26 +189,6 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
 
         vm.prank(address(adapterA));
         controller.receiveMessage(messageId, encodedTx, CHAIN_ID);
-    }
-
-    /// @dev `bridgedAt` is stamped on BOTH branches: it records arrival, not
-    ///      execution success.
-    function test_stampsBridgedAtOnSuccessAndFailureAlike() public {
-        _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
-        vm.warp(123_456);
-
-        // Success branch.
-        vm.prank(address(adapterA));
-        bytes32 okTxId = controller.receiveMessage(1, _encodedEmptyTx(1, CHAIN_ID), CHAIN_ID);
-        assertEq(controller.getTransaction(okTxId).bridgedAt, uint120(123_456));
-
-        // Failure branch.
-        Action[] memory actions = new Action[](1);
-        actions[0] = Action({ to: address(actionTarget), value: 0, data: abi.encodeCall(ActionExecute.fail, ()) });
-        bytes memory message = abi.encode(actions);
-        vm.prank(address(adapterA));
-        bytes32 failedTxId = controller.receiveMessage(2, _encodedTx(2, CHAIN_ID, message), CHAIN_ID);
-        assertEq(controller.getTransaction(failedTxId).bridgedAt, uint120(123_456));
     }
 
     function test_revertsOnUndecodableOuterEnvelope() public {
@@ -242,7 +222,7 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
             "the inner delivery must have hit the dedup guard"
         );
         // The outer delivery itself completed normally.
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.Executed));
     }
 
     function test_capturesRevertingPayloadInsteadOfReverting() public {
@@ -268,7 +248,7 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
         assertEq(txId, expectedTxId);
 
         // A failed execution is stored as `Delivered` (awaiting retry).
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.Delivered));
     }
 
     function test_acceptsPlainNativeTransfer() public {
@@ -300,6 +280,6 @@ contract CrossChainControllerReceiveMessageTest is CrossChainControllerBase {
         vm.prank(address(adapterA));
         bytes32 txId = controller.receiveMessage(messageId, encodedTx, CHAIN_ID); // must NOT revert
         assertEq(txId, expectedTxId);
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.Delivered));
     }
 }

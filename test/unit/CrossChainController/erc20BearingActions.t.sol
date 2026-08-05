@@ -123,7 +123,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(execController, 1, _transferAction(address(token), tokenRecipient, 100 ether));
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Executed));
         assertEq(token.balanceOf(tokenRecipient), 100 ether, "recipient is paid from the executor");
         assertEq(token.balanceOf(address(standaloneExecutor)), 0);
         assertEq(
@@ -139,7 +139,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(controller, 1, _transferAction(address(token), tokenRecipient, 100 ether));
 
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.Executed));
         assertEq(token.balanceOf(tokenRecipient), 100 ether);
         assertEq(token.balanceOf(address(daoMock)), 0);
     }
@@ -153,7 +153,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
         token.setBalance(fundedBySomeoneElse, 10 ether);
 
         vm.prank(fundedBySomeoneElse);
-        token.transfer(address(standaloneExecutor), 10 ether);
+        assertTrue(token.transfer(address(standaloneExecutor), 10 ether), "setup transfer must succeed");
 
         assertEq(token.balanceOf(address(standaloneExecutor)), 10 ether, "a plain transfer funds the executor");
 
@@ -176,7 +176,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(execController, 1, actions);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Executed));
         assertEq(puller.pulled(), 40 ether);
         assertEq(token.balanceOf(address(puller)), 40 ether);
         assertEq(token.balanceOf(address(standaloneExecutor)), 0);
@@ -193,16 +193,15 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
         (bytes memory encodedTx, bytes32 txId) =
             _deliver(execController, 1, _transferAction(address(token), tokenRecipient, 100 ether));
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Delivered));
         assertEq(token.balanceOf(tokenRecipient), 0);
-        assertGt(execController.getTransaction(txId).bridgedAt, 0);
 
         token.setBalance(address(standaloneExecutor), 100 ether);
 
         vm.prank(alice);
         execController.retryMessage(encodedTx);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Executed));
         assertEq(token.balanceOf(tokenRecipient), 100 ether);
     }
 
@@ -229,7 +228,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
         vm.prank(alice);
         execController.retryMessage(encodedTx);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Delivered));
 
         token.setBalance(address(standaloneExecutor), 100 ether);
         vm.prank(alice);
@@ -243,9 +242,9 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
             _deliver(execController, 1, _transferAction(address(token), tokenRecipient, 100 ether));
 
         vm.prank(alice);
-        execController.cancelMessage(encodedTx);
+        execController.cancelMessage(txId);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Cancelled));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Cancelled));
 
         token.setBalance(address(standaloneExecutor), 100 ether);
         vm.expectRevert(abi.encodeWithSelector(Errors.MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS.selector, txId));
@@ -271,7 +270,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(execController, 1, actions);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Delivered));
         assertEq(token.balanceOf(tokenRecipient), 0, "the funded first payout must roll back with the batch");
         assertEq(token.balanceOf(secondRecipient), 0);
         assertEq(token.balanceOf(address(standaloneExecutor)), 100 ether, "the executor keeps every token");
@@ -298,7 +297,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
         (, bytes32 txId) = _deliver(execController, 1, _transferAction(address(silentToken), tokenRecipient, 100 ether));
 
         assertEq(
-            uint256(execController.getTransaction(txId).state),
+            uint256(execController.getTransactionState(txId)),
             uint256(TransactionState.Executed),
             "a silent `false` return is indistinguishable from success to the executor"
         );
@@ -322,7 +321,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
 
         vm.expectRevert(abi.encodeWithSelector(Errors.MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS.selector, txId));
         vm.prank(alice);
-        execController.cancelMessage(encodedTx);
+        execController.cancelMessage(txId);
 
         vm.expectRevert(abi.encodeWithSelector(Errors.MESSAGE_ALREADY_DELIVERED_OR_EXECUTED.selector, txId));
         vm.prank(address(adapterA));
@@ -348,7 +347,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
         (, bytes32 txId) = _deliver(execController, 1, actions);
 
         assertEq(
-            uint256(execController.getTransaction(txId).state),
+            uint256(execController.getTransactionState(txId)),
             uint256(TransactionState.Delivered),
             "a SafeERC20 callee turns the silent failure back into a retryable one"
         );
@@ -375,7 +374,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(execController, 1, actions);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Executed));
         assertEq(silentToken.balanceOf(address(puller)), 0, "nothing moved");
         assertEq(puller.pulled(), 100 ether, "yet the callee booked the pull as done");
     }
@@ -392,7 +391,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(execController, 1, _transferAction(address(noReturnToken), tokenRecipient, 100e6));
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Executed));
         assertEq(noReturnToken.balanceOf(tokenRecipient), 100e6);
     }
 
@@ -416,7 +415,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
         (, bytes32 typedTxId) = _deliver(execController, 1, typedActions);
 
         assertEq(
-            uint256(execController.getTransaction(typedTxId).state),
+            uint256(execController.getTransactionState(typedTxId)),
             uint256(TransactionState.Delivered),
             "the undecodable empty return reverts the typed call"
         );
@@ -431,7 +430,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
 
         (, bytes32 safeTxId) = _deliver(execController, 2, safeActions);
 
-        assertEq(uint256(execController.getTransaction(safeTxId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(execController.getTransactionState(safeTxId)), uint256(TransactionState.Executed));
         assertEq(puller.pulled(), 100e6);
         assertEq(noReturnToken.balanceOf(address(puller)), 100e6);
     }
@@ -444,7 +443,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(execController, 1, _transferAction(address(fotToken), tokenRecipient, 100 ether));
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Executed));
         assertEq(fotToken.balanceOf(tokenRecipient), 90 ether, "10% was taken by the token");
         assertEq(fotToken.balanceOf(address(standaloneExecutor)), 0);
     }
@@ -464,7 +463,7 @@ contract CrossChainControllerErc20BearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(execController, 1, _transferAction(address(token), tokenRecipient, 100 ether));
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Delivered));
         assertEq(token.balanceOf(tokenRecipient), 0);
         assertEq(token.balanceOf(address(execController)), 100 ether, "the controller's own tokens stay put");
     }

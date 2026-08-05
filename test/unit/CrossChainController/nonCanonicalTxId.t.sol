@@ -81,13 +81,14 @@ contract CrossChainControllerNonCanonicalTxIdTest is CrossChainControllerBase {
         // Stored under the CANONICAL id, not the hash of the delivered bytes.
         assertEq(returnedId, TransactionLib.id(t));
         assertTrue(TransactionLib.id(t) != keccak256(weird), "canonical id must differ from raw-bytes hash");
-        assertEq(uint256(controller.getTransaction(TransactionLib.id(t)).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(controller.getTransactionState(TransactionLib.id(t))), uint256(TransactionState.Delivered));
     }
 
     /// @dev THE FIX: a message delivered as non-canonical bytes and left
-    ///      `Delivered` can be cancelled using EITHER the non-canonical bytes
-    ///      (as they appear in the event) OR the canonical bytes.
-    function test_cancelAcceptsNonCanonicalBytes() public {
+    ///      `Delivered` is still reachable by `cancelMessage`. Since cancelling
+    ///      takes the txId directly, the encoding it arrived in is irrelevant:
+    ///      the canonical id resolves the record either way.
+    function test_cancelAcceptsMessageDeliveredAsNonCanonicalBytes() public {
         _configureLane(CHAIN_ID, address(adapterA), remoteAdapterA);
 
         // A payload that is decodable but not a valid Action[] leaves the
@@ -98,13 +99,13 @@ contract CrossChainControllerNonCanonicalTxIdTest is CrossChainControllerBase {
 
         vm.prank(address(adapterA));
         controller.receiveMessage(1, weird, CHAIN_ID);
-        assertEq(uint256(controller.getTransaction(canonicalId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(controller.getTransactionState(canonicalId)), uint256(TransactionState.Delivered));
 
-        // Cancel with the NON-CANONICAL bytes (what the event carries).
+        // Cancel by the canonical id, though the bytes delivered were not.
         vm.prank(alice);
-        controller.cancelMessage(weird);
+        controller.cancelMessage(canonicalId);
 
-        assertEq(uint256(controller.getTransaction(canonicalId).state), uint256(TransactionState.Cancelled));
+        assertEq(uint256(controller.getTransactionState(canonicalId)), uint256(TransactionState.Cancelled));
     }
 
     /// @dev Mirror of the above for the retry path: retrying with the
@@ -118,7 +119,7 @@ contract CrossChainControllerNonCanonicalTxIdTest is CrossChainControllerBase {
 
         vm.prank(address(adapterA));
         controller.receiveMessage(1, weird, CHAIN_ID);
-        assertEq(uint256(controller.getTransaction(canonicalId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(controller.getTransactionState(canonicalId)), uint256(TransactionState.Delivered));
 
         // Retry with the non-canonical bytes still fails to execute (payload is
         // undecodable as Action[]), so it reverts — but crucially NOT with
@@ -128,7 +129,7 @@ contract CrossChainControllerNonCanonicalTxIdTest is CrossChainControllerBase {
         controller.retryMessage(weird);
 
         // Record is untouched and still findable by canonical bytes.
-        assertEq(uint256(controller.getTransaction(canonicalId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(controller.getTransactionState(canonicalId)), uint256(TransactionState.Delivered));
     }
 
     // -------------------------------------------------------------------------

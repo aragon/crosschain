@@ -35,17 +35,6 @@ enum TransactionState {
     Cancelled
 }
 
-/// @notice What the controller retains about a message it has seen.
-/// @dev Both fields share one storage slot, so recording the delivery time
-///      costs no extra `SSTORE` on the receive path.
-/// @param state The delivery/execution state of the message.
-/// @param bridgedAt The `block.timestamp` at which the message was delivered.
-///        `0` for a txId that was never delivered.
-struct TransactionRecord {
-    TransactionState state;
-    uint120 bridgedAt;
-}
-
 /// @title TransactionLib
 /// @notice Encoding, decoding and identity helpers for `Transaction`.
 /// @custom:security-contact sirt@aragon.org

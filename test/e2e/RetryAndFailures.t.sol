@@ -325,7 +325,7 @@ contract CrossChainRetryAndFailuresE2ETest is CrossChainE2EBase {
 
         _on(destination);
         vm.prank(address(destination.dao));
-        destination.controller.cancelMessage(encodedTx);
+        destination.controller.cancelMessage(txId);
         _assertCancelled(destination, txId);
 
         // Even with the failure fixed, the message can never run.

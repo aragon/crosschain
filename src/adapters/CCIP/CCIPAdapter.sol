@@ -13,6 +13,7 @@ import { IAny2EVMMessageReceiver } from "@chainlink/contracts-ccip/contracts/int
 
 import { Errors } from "../../lib/Errors.sol";
 import { ChainIds } from "../../lib/ChainIds.sol";
+import { CCIPChainIds } from "./CCIPChainIds.sol";
 
 import { BaseAdapter } from "../BaseAdapter.sol";
 import { IBaseAdapter } from "../IBaseAdapter.sol";
@@ -61,7 +62,7 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
     )
         BaseAdapter(_crosschainController, _trustedRemoteConfigs)
     {
-        if (_ccipRouter == address(0)) revert Errors.ZERO_ADDRESS();
+        if (_ccipRouter.code.length == 0) revert Errors.HAS_NO_CODE(_feeToken);
 
         // `address(0)` is the native currency and is always valid.
         // Anything else must be a deployed token contract.
@@ -200,77 +201,76 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
     //
     // CCIP addresses chains by its own selector, not by the EVM chain id. Both
     // directions revert on an unmapped id: returning `0` would silently address
-    // the wrong lane. Selectors are from
-    // https://docs.chain.link/ccip/directory/mainnet
+    // the wrong lane. The selectors themselves live in `CCIPChainIds`.
     // -------------------------------------------------------------------------
 
     /// @inheritdoc IBaseAdapter
     function toNativeChainId(uint256 _chainId) public view virtual override returns (uint256) {
         if (_chainId == ChainIds.ETHEREUM) {
-            return uint64(5009297550715157269);
+            return CCIPChainIds.ETHEREUM;
         } else if (_chainId == ChainIds.AVALANCHE) {
-            return uint64(6433500567565415381);
+            return CCIPChainIds.AVALANCHE;
         } else if (_chainId == ChainIds.POLYGON) {
-            return uint64(4051577828743386545);
+            return CCIPChainIds.POLYGON;
         } else if (_chainId == ChainIds.BNB) {
-            return uint64(11344663589394136015);
+            return CCIPChainIds.BNB;
         } else if (_chainId == ChainIds.OPTIMISM) {
-            return uint64(3734403246176062136);
+            return CCIPChainIds.OPTIMISM;
         } else if (_chainId == ChainIds.CRONOS) {
-            return uint64(1456215246176062136);
+            return CCIPChainIds.CRONOS;
         } else if (_chainId == ChainIds.HYPER_EVM) {
-            return uint64(2442541497099098535);
+            return CCIPChainIds.HYPER_EVM;
         } else if (_chainId == ChainIds.PLASMA) {
-            return uint64(9335212494177455608);
+            return CCIPChainIds.PLASMA;
         } else if (_chainId == ChainIds.MONAD) {
-            return uint64(8481857512324358265);
+            return CCIPChainIds.MONAD;
         } else if (_chainId == ChainIds.BASE) {
-            return uint64(15971525489660198786);
+            return CCIPChainIds.BASE;
         } else if (_chainId == ChainIds.ARBITRUM_ONE) {
-            return uint64(4949039107694359620);
+            return CCIPChainIds.ARBITRUM_ONE;
         } else if (_chainId == ChainIds.INK) {
-            return uint64(3461204551265785888);
+            return CCIPChainIds.INK;
         } else if (_chainId == ChainIds.LINEA) {
-            return uint64(4627098889531055414);
+            return CCIPChainIds.LINEA;
         } else if (_chainId == ChainIds.KATANA) {
-            return uint64(2459028469735686113);
+            return CCIPChainIds.KATANA;
         } else if (_chainId == ChainIds.MEGA_ETH) {
-            return uint64(6093540873831549674);
+            return CCIPChainIds.MEGA_ETH;
         }
         revert Errors.UNKNOWN_CHAIN_ID(_chainId);
     }
 
     /// @inheritdoc IBaseAdapter
     function fromNativeChainId(uint256 _chainId) public view virtual override returns (uint256) {
-        if (_chainId == uint64(5009297550715157269)) {
+        if (_chainId == CCIPChainIds.ETHEREUM) {
             return ChainIds.ETHEREUM;
-        } else if (_chainId == uint64(6433500567565415381)) {
+        } else if (_chainId == CCIPChainIds.AVALANCHE) {
             return ChainIds.AVALANCHE;
-        } else if (_chainId == uint64(4051577828743386545)) {
+        } else if (_chainId == CCIPChainIds.POLYGON) {
             return ChainIds.POLYGON;
-        } else if (_chainId == uint64(11344663589394136015)) {
+        } else if (_chainId == CCIPChainIds.BNB) {
             return ChainIds.BNB;
-        } else if (_chainId == uint64(3734403246176062136)) {
+        } else if (_chainId == CCIPChainIds.OPTIMISM) {
             return ChainIds.OPTIMISM;
-        } else if (_chainId == uint64(1456215246176062136)) {
+        } else if (_chainId == CCIPChainIds.CRONOS) {
             return ChainIds.CRONOS;
-        } else if (_chainId == uint64(2442541497099098535)) {
+        } else if (_chainId == CCIPChainIds.HYPER_EVM) {
             return ChainIds.HYPER_EVM;
-        } else if (_chainId == uint64(9335212494177455608)) {
+        } else if (_chainId == CCIPChainIds.PLASMA) {
             return ChainIds.PLASMA;
-        } else if (_chainId == uint64(8481857512324358265)) {
+        } else if (_chainId == CCIPChainIds.MONAD) {
             return ChainIds.MONAD;
-        } else if (_chainId == uint64(15971525489660198786)) {
+        } else if (_chainId == CCIPChainIds.BASE) {
             return ChainIds.BASE;
-        } else if (_chainId == uint64(4949039107694359620)) {
+        } else if (_chainId == CCIPChainIds.ARBITRUM_ONE) {
             return ChainIds.ARBITRUM_ONE;
-        } else if (_chainId == uint64(3461204551265785888)) {
+        } else if (_chainId == CCIPChainIds.INK) {
             return ChainIds.INK;
-        } else if (_chainId == uint64(4627098889531055414)) {
+        } else if (_chainId == CCIPChainIds.LINEA) {
             return ChainIds.LINEA;
-        } else if (_chainId == uint64(2459028469735686113)) {
+        } else if (_chainId == CCIPChainIds.KATANA) {
             return ChainIds.KATANA;
-        } else if (_chainId == uint64(6093540873831549674)) {
+        } else if (_chainId == CCIPChainIds.MEGA_ETH) {
             return ChainIds.MEGA_ETH;
         }
         revert Errors.UNKNOWN_NATIVE_CHAIN_ID(_chainId);

@@ -4,7 +4,6 @@ pragma solidity ^0.8.8;
 
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import { PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
 import { PluginUUPSUpgradeable } from "@aragon/osx-commons-contracts/src/plugin/PluginUUPSUpgradeable.sol";
@@ -17,7 +16,7 @@ import { ICrossChainController } from "./ICrossChainController.sol";
 import { Errors } from "./lib/Errors.sol";
 import { Permissions } from "./lib/Permissions.sol";
 
-import { TransactionLib, Transaction, TransactionRecord, TransactionState } from "./lib/Transaction.sol";
+import { TransactionLib, Transaction, TransactionState } from "./lib/Transaction.sol";
 
 /// @title CrossChainController
 /// @notice The entry point for sending and receiving a message cross chain.
@@ -31,8 +30,8 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     ///         two identical messages never share a `txId`.
     uint256 internal _currentTxNonce;
 
-    /// @notice txId -> stored message: its state and when it was delivered.
-    mapping(bytes32 => TransactionRecord) private _transactions;
+    /// @notice txId -> the message's delivery/execution state.
+    mapping(bytes32 => TransactionState) private _transactions;
 
     /// @notice standard chain id -> adapter configuration.
     mapping(uint256 => ChainConfig) public chainToAdapter;
@@ -212,18 +211,13 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
 
         (uint256 messageId, uint256 fee) = _dispatch(config, _destinationChainId, _gasLimit, encodedTx);
 
+        bytes32 txId = encodedTx.id();
+
         emit MessageForwarded(
-            _destinationChainId,
-            messageId,
-            encodedTx.id(),
-            encodedTx,
-            config.localAdapter,
-            config.remoteAdapter,
-            _gasLimit,
-            fee
+            _destinationChainId, messageId, txId, encodedTx, config.localAdapter, config.remoteAdapter, _gasLimit, fee
         );
 
-        return encodedTx.id();
+        return txId;
     }
 
     // -------------------------------------------------------------------------
@@ -252,19 +246,13 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
             revert Errors.INCORRECT_CHAIN_MISMATCH();
         }
 
-        TransactionRecord storage record = _transactions[txId];
-
         // Either message is already delivered or executed.
         // If delivered, but execution failed, call retry.
-        if (record.state != TransactionState.None) {
+        if (_transactions[txId] != TransactionState.None) {
             revert Errors.MESSAGE_ALREADY_DELIVERED_OR_EXECUTED(txId);
         }
 
-        record.state = TransactionState.Executed;
-
-        // Stamped on both branches: this is when the message arrived, whether
-        // or not its actions executed. Shares a slot with `state`.
-        record.bridgedAt = SafeCast.toUint120(block.timestamp);
+        _transactions[txId] = TransactionState.Executed;
 
         // Reserve gas for the `catch` block before running the payload.
         //
@@ -285,7 +273,7 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
         try this.executeActions{ gas: gasLimit }(txId, transaction.message) {
             emit MessageReceived(_originChainId, _messageId, txId, _encodedTx);
         } catch (bytes memory reason) {
-            record.state = TransactionState.Delivered;
+            _transactions[txId] = TransactionState.Delivered;
 
             emit MessageExecutionFailed(_originChainId, _messageId, txId, _encodedTx, reason);
         }
@@ -306,14 +294,13 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
         // representation of the same transaction resolves to the same txId.
         Transaction memory transaction = _encodedTx.decode();
         bytes32 txId = transaction.id();
-        TransactionRecord storage record = _transactions[txId];
 
         // Transaction must be delivered, but not executed in order to retry.
-        if (record.state != TransactionState.Delivered) {
+        if (_transactions[txId] != TransactionState.Delivered) {
             revert Errors.MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS(txId);
         }
 
-        record.state = TransactionState.Executed;
+        _transactions[txId] = TransactionState.Executed;
 
         this.executeActions(txId, transaction.message);
 
@@ -324,20 +311,15 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
     /// @dev Only a `Delivered` (failed, pending-retry) message can be cancelled.
     ///      The `txId` stays occupied (state becomes `Cancelled`, not `None`),
     ///      so the same message can never be re-delivered or retried afterwards.
-    /// @param _encodedTx The encoded tx that must be cancelled.
-    function cancelMessage(bytes memory _encodedTx) public virtual auth(Permissions.CANCEL_MESSAGE_PERMISSION_ID) {
-        // Normalized like `receiveMessage`/`retryMessage`, so the emergency
-        // path accepts any decodable representation of the stored message.
-        bytes32 txId = _encodedTx.decode().id();
-        TransactionRecord storage record = _transactions[txId];
-
-        if (record.state != TransactionState.Delivered) {
-            revert Errors.MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS(txId);
+    /// @param _txId The id of the tx that must be cancelled.
+    function cancelMessage(bytes32 _txId) public virtual auth(Permissions.CANCEL_MESSAGE_PERMISSION_ID) {
+        if (_transactions[_txId] != TransactionState.Delivered) {
+            revert Errors.MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS(_txId);
         }
 
-        record.state = TransactionState.Cancelled;
+        _transactions[_txId] = TransactionState.Cancelled;
 
-        emit MessageCancelled(txId);
+        emit MessageCancelled(_txId);
     }
 
     /// @notice Decodes and runs an authenticated payload on the executor.
@@ -400,10 +382,10 @@ contract CrossChainController is ICrossChainController, PluginUUPSUpgradeable, P
         return chainToAdapter[_chainId].localAdapter == _adapter;
     }
 
-    /// @notice Returns everything stored about a transaction.
+    /// @notice Returns the stored state of a transaction.
     /// @param _txId The tx id.
-    /// @return The record; all-zero for a txId that was never delivered.
-    function getTransaction(bytes32 _txId) public view virtual returns (TransactionRecord memory) {
+    /// @return The state; `None` for a txId that was never delivered.
+    function getTransactionState(bytes32 _txId) public view virtual returns (TransactionState) {
         return _transactions[_txId];
     }
 
