@@ -144,21 +144,17 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
 
         // Nothing has crossed yet: CCIP delivery is a separate transaction.
         assertEq(destination.target.count(), 0, "the action must not run at send time");
-        assertEq(uint256(destination.controller.getTransaction(txId).state), uint256(TransactionState.None));
+        assertEq(uint256(destination.controller.getTransactionState(txId)), uint256(TransactionState.None));
 
         (, bool success) = _deliverNext(origin, destination);
 
         assertTrue(success, "delivery must succeed");
         assertEq(destination.target.count(), 1, "the action must have executed on the destination");
         assertEq(
-            uint256(destination.controller.getTransaction(txId).state),
+            uint256(destination.controller.getTransactionState(txId)),
             uint256(TransactionState.Executed),
             "the destination must record the message as executed"
         );
-
-        // The txId the origin returned is the one the destination stored: the
-        // envelope survived the crossing byte for byte.
-        assertEq(destination.controller.getTransaction(txId).bridgedAt, uint120(block.timestamp));
     }
 
     /// @dev The identity only a round trip can check: the account CCIP reports
@@ -220,7 +216,7 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         (, bool success) = _deliverNext(origin, destination);
         assertTrue(success, "a failing payload must not fail the CCIP delivery");
         assertEq(
-            uint256(destination.controller.getTransaction(txId).state),
+            uint256(destination.controller.getTransactionState(txId)),
             uint256(TransactionState.Delivered),
             "a failed execution must be left retryable"
         );
@@ -238,7 +234,7 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         _on(origin);
 
         assertTrue(flaky.wasCalled(), "the retried action must actually execute");
-        assertEq(uint256(destination.controller.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(destination.controller.getTransactionState(txId)), uint256(TransactionState.Executed));
     }
 
     /// @dev Replaying the same delivered message across the bridge is rejected
@@ -276,8 +272,8 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         _deliverNext(origin, destination);
 
         assertEq(destination.target.count(), 2, "both messages must execute");
-        assertEq(uint256(destination.controller.getTransaction(firstTxId).state), uint256(TransactionState.Executed));
-        assertEq(uint256(destination.controller.getTransaction(secondTxId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(destination.controller.getTransactionState(firstTxId)), uint256(TransactionState.Executed));
+        assertEq(uint256(destination.controller.getTransactionState(secondTxId)), uint256(TransactionState.Executed));
     }
 
     /// @dev A delivery attributed to somebody other than the origin controller
@@ -316,7 +312,7 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         assertFalse(_deliver(origin, destination, messageId), "a paused controller must refuse the delivery");
         assertEq(destination.target.count(), 0, "no action may execute while paused");
         assertEq(
-            uint256(destination.controller.getTransaction(txId).state),
+            uint256(destination.controller.getTransactionState(txId)),
             uint256(TransactionState.None),
             "a refused delivery must leave no record"
         );
@@ -329,7 +325,7 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         // The message was never consumed, so CCIP can still execute it.
         assertTrue(_deliver(origin, destination, messageId), "delivery must succeed once unpaused");
         assertEq(destination.target.count(), 1);
-        assertEq(uint256(destination.controller.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(destination.controller.getTransactionState(txId)), uint256(TransactionState.Executed));
     }
 
     /// @dev The fee is paid by the CONTROLLER, from its own balance, and the
@@ -378,15 +374,15 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         bytes32 txId = _forward(origin, destination, abi.encode(actions));
 
         _deliverNext(origin, destination);
-        assertEq(uint256(destination.controller.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(destination.controller.getTransactionState(txId)), uint256(TransactionState.Delivered));
 
         bytes memory bridgedEnvelope = origin.router.sentAt(0).data;
 
         _on(destination);
         vm.prank(alice);
-        destination.controller.cancelMessage(bridgedEnvelope);
+        destination.controller.cancelMessage(txId);
 
-        assertEq(uint256(destination.controller.getTransaction(txId).state), uint256(TransactionState.Cancelled));
+        assertEq(uint256(destination.controller.getTransactionState(txId)), uint256(TransactionState.Cancelled));
 
         // Even with the failure fixed, the message can never run.
         flaky.setShouldRevert(false);
@@ -434,7 +430,7 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         assertFalse(success, "an unusably small gas limit must fail the delivery");
         assertEq(destination.target.count(), 0, "the action must not execute");
         assertEq(
-            uint256(destination.controller.getTransaction(txId).state),
+            uint256(destination.controller.getTransactionState(txId)),
             uint256(TransactionState.None),
             "a starved delivery must leave no record"
         );
@@ -453,7 +449,7 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         // for. This is the documented CCIP recovery path.
         assertTrue(_manualExecute(origin, destination, messageId, GAS_LIMIT), "manual execution must recover it");
         assertEq(destination.target.count(), 1, "the action must execute on manual replay");
-        assertEq(uint256(destination.controller.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(destination.controller.getTransactionState(txId)), uint256(TransactionState.Executed));
     }
 
     /// @dev Starvation is a CLIFF: the message either fails outright leaving no
@@ -489,7 +485,7 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         _deliverNext(origin, destination);
 
         assertEq(
-            uint256(destination.controller.getTransaction(starvedTxId).state),
+            uint256(destination.controller.getTransactionState(starvedTxId)),
             uint256(TransactionState.Delivered),
             "a starved delivery must leave NO record -- in particular never `Delivered`"
         );
@@ -523,7 +519,7 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         assertFalse(success, "an envelope for another chain must be refused");
         assertEq(destination.target.count(), 0, "no action may execute for a misaddressed envelope");
         assertEq(
-            uint256(destination.controller.getTransaction(TransactionLib.id(misaddressed)).state),
+            uint256(destination.controller.getTransactionState(TransactionLib.id(misaddressed))),
             uint256(TransactionState.None),
             "a rejected envelope must leave no record"
         );

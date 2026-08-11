@@ -58,10 +58,10 @@ contract TransactionLibTest is Test {
     // -------------------------------------------------------------------------
 
     /// @dev `forwardMessage` derives the txId from the BYTES overload
-    ///      (`encodedTx.id()`), while `receiveMessage`/`retryMessage`/
-    ///      `cancelMessage` derive it from the STRUCT overload
-    ///      (`transaction.id()`). If the two ever diverged, every forwarded
-    ///      message would arrive under a different txId than it was sent with.
+    ///      (`encodedTx.id()`), while `receiveMessage`/`retryMessage` derive it
+    ///      from the STRUCT overload (`transaction.id()`). If the two ever
+    ///      diverged, every forwarded message would arrive under a different
+    ///      txId than it was sent with.
     function test_idOfStructEqualsIdOfItsEncoding() public pure {
         Transaction memory transaction = _sample();
 

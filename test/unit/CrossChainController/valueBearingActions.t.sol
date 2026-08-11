@@ -104,7 +104,7 @@ contract CrossChainControllerValueBearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(execController, 1, _valueAction(recipient, 1 ether));
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Executed));
         assertEq(recipient.balance, 1 ether, "recipient must be paid from the executor");
         assertEq(address(standaloneExecutor).balance, 0, "executor balance is the source of funds");
         assertEq(
@@ -120,7 +120,7 @@ contract CrossChainControllerValueBearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(controller, 1, _valueAction(recipient, 1 ether));
 
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.Executed));
         assertEq(recipient.balance, 1 ether);
         assertEq(address(daoMock).balance, 0);
         assertEq(address(controller).balance, 5 ether);
@@ -166,12 +166,11 @@ contract CrossChainControllerValueBearingActionsTest is CrossChainControllerBase
         (bytes memory encodedTx, bytes32 txId) = _deliver(execController, 1, _valueAction(recipient, 1 ether));
 
         assertEq(
-            uint256(execController.getTransaction(txId).state),
+            uint256(execController.getTransactionState(txId)),
             uint256(TransactionState.Delivered),
             "an underfunded action must not revert the delivery"
         );
         assertEq(recipient.balance, 0);
-        assertGt(execController.getTransaction(txId).bridgedAt, 0, "arrival is still recorded");
 
         // Funding is a separate, prior operation -- never part of the message.
         vm.deal(address(standaloneExecutor), 1 ether);
@@ -179,7 +178,7 @@ contract CrossChainControllerValueBearingActionsTest is CrossChainControllerBase
         vm.prank(alice);
         execController.retryMessage(encodedTx);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Executed));
         assertEq(recipient.balance, 1 ether);
         assertEq(address(standaloneExecutor).balance, 0);
     }
@@ -211,13 +210,13 @@ contract CrossChainControllerValueBearingActionsTest is CrossChainControllerBase
         vm.prank(alice);
         execController.retryMessage(encodedTx);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Delivered));
 
         vm.deal(address(standaloneExecutor), 1 ether);
         vm.prank(alice);
         execController.retryMessage(encodedTx);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Executed));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Executed));
         assertEq(recipient.balance, 1 ether);
     }
 
@@ -227,9 +226,9 @@ contract CrossChainControllerValueBearingActionsTest is CrossChainControllerBase
         (bytes memory encodedTx, bytes32 txId) = _deliver(execController, 1, _valueAction(recipient, 1 ether));
 
         vm.prank(alice);
-        execController.cancelMessage(encodedTx);
+        execController.cancelMessage(txId);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Cancelled));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Cancelled));
 
         vm.deal(address(standaloneExecutor), 1 ether);
         vm.expectRevert(abi.encodeWithSelector(Errors.MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS.selector, txId));
@@ -255,7 +254,7 @@ contract CrossChainControllerValueBearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(execController, 1, actions);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Delivered));
         assertEq(recipient.balance, 0, "the funded first action must be rolled back with the batch");
         assertEq(address(valueTarget).balance, 0);
         assertEq(address(standaloneExecutor).balance, 1 ether, "the executor keeps every wei");
@@ -273,7 +272,7 @@ contract CrossChainControllerValueBearingActionsTest is CrossChainControllerBase
 
         (, bytes32 txId) = _deliver(execController, 1, actions);
 
-        assertEq(uint256(execController.getTransaction(txId).state), uint256(TransactionState.Delivered));
+        assertEq(uint256(execController.getTransactionState(txId)), uint256(TransactionState.Delivered));
         assertEq(counterTarget.count(), 0);
         assertEq(address(standaloneExecutor).balance, 1 ether);
     }

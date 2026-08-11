@@ -108,14 +108,13 @@ contract CrossChainGasLimitsE2ETest is CrossChainE2EBase {
         GasBurnerTarget burner = new GasBurnerTarget();
 
         bytes32 txId = _forwardViaProposal(origin, destination, 2_000_000, _burnEverythingPayload(burner));
-        bytes memory encodedTx = _queuedPayload(origin, 0);
 
         _deliverNext(origin, destination);
         _assertDelivered(destination, txId);
 
         _on(destination);
         vm.prank(address(destination.dao));
-        destination.controller.cancelMessage(encodedTx);
+        destination.controller.cancelMessage(txId);
         _on(origin);
 
         _assertCancelled(destination, txId);
@@ -164,7 +163,7 @@ contract CrossChainGasLimitsE2ETest is CrossChainE2EBase {
 
         vm.prank(address(destination.dao));
         vm.expectRevert(abi.encodeWithSelector(Errors.MESSAGE_ALREADY_EXECUTED_OR_NOT_EXISTS.selector, txId));
-        destination.controller.cancelMessage(encodedTx);
+        destination.controller.cancelMessage(txId);
         _on(origin);
     }
 

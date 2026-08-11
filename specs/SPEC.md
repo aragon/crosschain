@@ -220,6 +220,26 @@ detail: `sendMessage` is reached only by `delegatecall` from the controller, so 
 against the controller's storage and balance, while the receive path runs as the adapter
 itself so it can read its own trusted-remote map.
 
+> [!WARNING]
+> **Anything the send path needs must be `immutable`, never storage.** `sendMessage` is
+> `delegatecall`ed, so `address(this)` is the *controller* and every storage slot the
+> adapter touches resolves against the **controller's** storage, not its own. A `sload`
+> reads whatever the controller happens to keep in that slot; an `sstore` **overwrites
+> controller state** - silently corrupting `_transactions`, `executor`, or a permission
+> field, depending on where the adapter's variable landed in the layout. Neither fails
+> loudly. An adapter that writes to storage on the send path is a live corruption bug in
+> the controller, not a bug in the adapter.
+>
+> This is why `CCIP_ROUTER` and `FEE_TOKEN` on `CCIPAdapter` are `immutable`: immutables
+> are baked into the runtime bytecode, so they read identically in both contexts. The cost
+> is that changing one means deploying a new adapter - deliberately paid.
+>
+> Adapter storage is legal on the **receive path only**, which runs as the adapter under a
+> plain `CALL`. `_trustedRemotes` is exactly that: a real mapping, read by `ccipReceive` and
+> written by `setTrustedRemotes`, and never touched by `sendMessage`. When adding state to
+> an adapter, the test is not "is this constant?" but "can the send path reach it?" - if it
+> can, it must be `immutable` or the adapter is unsafe.
+
 | Function | Access | What it does |
 |---|---|---|
 | `sendMessage(receiver, dstChainId, gasLimit, message)` | `onlyDelegatecallFromController` | Sends over the bridge. Because it is delegatecalled, the fee comes from the **controller's** balance and the bridge attributes the message to the **controller's** address. Returns `(messageId, fee)`. |

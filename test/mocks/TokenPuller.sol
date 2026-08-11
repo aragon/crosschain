@@ -29,6 +29,7 @@ contract TokenPuller {
     ///      cannot be decoded -- so this swallows the failure exactly like the
     ///      executor's raw `.call` does.
     function pullUnchecked(address _token, uint256 _amount) external {
+        // forge-lint: disable-next-line(erc20-unchecked-transfer)
         IERC20(_token).transferFrom(msg.sender, address(this), _amount);
         pulled += _amount;
     }

@@ -69,7 +69,7 @@ contract CrossChainControllerUpgradeTest is CrossChainControllerBase {
         assertEq(remoteAdapter, remoteAdapterA);
         assertEq(controller.executor(), address(daoMock), "executor lost in upgrade");
         assertEq(
-            uint256(controller.getTransaction(deliveredTxId).state),
+            uint256(controller.getTransactionState(deliveredTxId)),
             uint256(TransactionState.Delivered),
             "transaction record lost in upgrade"
         );

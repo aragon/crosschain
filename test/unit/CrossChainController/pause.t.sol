@@ -158,9 +158,9 @@ contract CrossChainControllerPauseTest is CrossChainControllerBase {
         controller.pause();
 
         vm.prank(alice);
-        controller.cancelMessage(TransactionLib.encode(failedTx));
+        controller.cancelMessage(TransactionLib.id(failedTx));
 
-        assertEq(uint256(controller.getTransaction(txId).state), uint256(TransactionState.Cancelled));
+        assertEq(uint256(controller.getTransactionState(txId)), uint256(TransactionState.Cancelled));
     }
 
     // -------------------------------------------------------------------------
