@@ -87,6 +87,71 @@ abstract contract CrossChainDeploy is Script {
     ///      files — only as filled fields.
     function _loadTopology() internal virtual;
 
+    /// @notice Fills the topology from a JSON file in the kit's own schema.
+    /// @dev Offered, not imposed: a consumer whose config already exists in
+    ///      another shape overrides `_loadTopology` and fills the same fields
+    ///      itself.
+    ///
+    ///      Parsed as SCALARS, one path at a time. Array-valued JSON cheatcodes
+    ///      generate ABI decoders heavy enough to overflow the stack in a
+    ///      project that compiles without `via_ir` — and neither of the first
+    ///      two consumers will enable it. `satelliteCount` exists so the
+    ///      satellite list can be walked by index instead of decoded as an array
+    ///      of structs, which is the worst case of all. The signer roster is the
+    ///      one genuine array and is read in its own frame.
+    function _loadTopologyFromJson(string memory _path) internal {
+        require(vm.exists(_path), string.concat("topology not found: ", _path));
+        string memory json = vm.readFile(_path);
+
+        _readChain(json, ".hub", hub);
+        minFailedMessageGas = vm.parseJsonUint(json, ".minFailedMessageGas");
+
+        uint256 count = vm.parseJsonUint(json, ".satelliteCount");
+        require(count > 0, "satelliteCount must be > 0");
+        for (uint256 i = 0; i < count; i++) {
+            satellites.push();
+            _readChain(json, string.concat(".satellites[", vm.toString(i), "]"), satellites[i]);
+            require(satellites[i].chainId != hub.chainId, "satellite chain id equals the hub");
+        }
+    }
+
+    function _readChain(string memory _json, string memory _at, ChainCfg storage _chain) private {
+        _chain.chainId = vm.parseJsonUint(_json, string.concat(_at, ".chainId"));
+        _chain.rpc = vm.parseJsonString(_json, string.concat(_at, ".rpc"));
+        _chain.daoFactory = vm.parseJsonAddress(_json, string.concat(_at, ".daoFactory"));
+        _chain.psp = vm.parseJsonAddress(_json, string.concat(_at, ".psp"));
+        _chain.pluginRepoFactory = vm.parseJsonAddress(_json, string.concat(_at, ".pluginRepoFactory"));
+        _chain.crossChainRepo = vm.parseJsonAddress(_json, string.concat(_at, ".crossChainRepo"));
+        _chain.multisigRepo = vm.parseJsonAddress(_json, string.concat(_at, ".multisigRepo"));
+        _chain.ccipRouter = vm.parseJsonAddress(_json, string.concat(_at, ".ccipRouter"));
+        _chain.ccipFeeToken = vm.parseJsonAddress(_json, string.concat(_at, ".ccipFeeToken"));
+        _chain.daoSubdomain = vm.parseJsonString(_json, string.concat(_at, ".dao.subdomain"));
+        _chain.daoMetadata = bytes(vm.parseJsonString(_json, string.concat(_at, ".dao.metadata")));
+
+        _requireChain(_chain);
+        _readRoster(_json, _at, _chain);
+    }
+
+    /// @dev Its own frame: the address-array decoder is the heaviest thing here.
+    function _readRoster(string memory _json, string memory _at, ChainCfg storage _chain) private {
+        _chain.minApprovals = uint16(vm.parseJsonUint(_json, string.concat(_at, ".governance.minApprovals")));
+        address[] memory members = vm.parseJsonAddressArray(_json, string.concat(_at, ".governance.members"));
+        for (uint256 i = 0; i < members.length; i++) {
+            _chain.members.push(members[i]);
+        }
+    }
+
+    /// @dev Placeholders are rejected before anything is broadcast. A zero here
+    ///      is not a default, it is an unfinished config.
+    function _requireChain(ChainCfg storage _chain) private view {
+        require(_chain.chainId != 0, "chainId missing");
+        require(bytes(_chain.rpc).length > 0, "rpc missing");
+        require(_chain.daoFactory != address(0), "daoFactory missing");
+        require(_chain.psp != address(0), "psp missing");
+        require(_chain.crossChainRepo != address(0), "crossChainRepo missing");
+        require(_chain.ccipRouter != address(0), "ccipRouter missing");
+    }
+
     /// @notice One fork per chain.
     /// @dev `virtual` only so a test harness can supply forks it already made,
     ///      which is a mechanism concession rather than a policy one.

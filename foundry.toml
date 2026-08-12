@@ -8,6 +8,16 @@ libs = ["lib"]
 optimizer = true
 optimizer_runs = 200
 
+# The deploy kit reads its topology from JSON. Read-only, and scoped to the two
+# places a config can live: a real deployment's `deploy/`, and the kit's own
+# fixtures. A CONSUMER of the kit needs the same grant for wherever it keeps its
+# own config -- `fs_permissions` is per-project and does not travel with the
+# submodule.
+fs_permissions = [
+    { access = "read", path = "./deploy" },
+    { access = "read", path = "./test/kit/fixtures" },
+]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
 
 [fmt]

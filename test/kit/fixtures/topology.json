@@ -1,0 +1,36 @@
+{
+  "_comment": "Kit self-test topology. Sepolia hub, Base Sepolia satellite, against the real OSx deployments on both. crossChainRepo is a placeholder here: the suite publishes its own on each fork so the run exercises the controller in THIS repo, and injects the address.",
+
+  "hub": {
+    "chainId": 11155111,
+    "rpc": "SEPOLIA_RPC_URL",
+    "daoFactory": "0xB815791c233807D39b7430127975244B36C19C8e",
+    "psp": "0xC24188a73dc09aA7C721f96Ad8857B469C01dC9f",
+    "pluginRepoFactory": "0x399Ce2a71ef78bE6890EB628384dD09D4382a7f0",
+    "crossChainRepo": "0x000000000000000000000000000000000000dEaD",
+    "multisigRepo": "0x9e7956C8758470dE159481e5DD0d08F8B59217A2",
+    "ccipRouter": "0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59",
+    "ccipFeeToken": "0x0000000000000000000000000000000000000000",
+    "dao": { "subdomain": "", "metadata": "ipfs://hub" },
+    "governance": { "members": ["0x000000000000000000000000000000000000A11c"], "minApprovals": 1 }
+  },
+
+  "satelliteCount": 1,
+  "satellites": [
+    {
+      "chainId": 84532,
+      "rpc": "BASE_SEPOLIA_RPC_URL",
+      "daoFactory": "0x016CBa9bd729C30b16849b2c52744447767E9dab",
+      "psp": "0xd97D409Ca645b108468c26d8506f3a4Bf9D0BE81",
+      "pluginRepoFactory": "0xD8Cc78EDB894ff93d757cCa481D2B43b5445E2aE",
+      "crossChainRepo": "0x000000000000000000000000000000000000dEaD",
+      "multisigRepo": "0x705596219C1C31dd92E3449c8E04251CcacCb6aB",
+      "ccipRouter": "0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93",
+      "ccipFeeToken": "0x0000000000000000000000000000000000000000",
+      "dao": { "subdomain": "", "metadata": "ipfs://satellite" },
+      "governance": { "members": ["0x000000000000000000000000000000000000A11c"], "minApprovals": 1 }
+    }
+  ],
+
+  "minFailedMessageGas": 45000
+}

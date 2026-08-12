@@ -14,6 +14,7 @@ import { CrossChainControllerSetup } from "@src/CrossChainControllerSetup.sol";
 import { Executor } from "@src/Executor.sol";
 import { Permissions } from "@src/lib/Permissions.sol";
 import { ChainIds } from "@src/lib/ChainIds.sol";
+import { CrossChainDeployConformance } from "./CrossChainDeployConformance.sol";
 
 /// @notice Fills the topology from values the test sets, and governs the hub
 ///         with the kit's own Multisig installer.
@@ -53,6 +54,18 @@ contract KitHarness is CrossChainDeploy {
     uint256 internal chainIds0;
 
     function _loadTopology() internal override { }
+
+    /// @dev Exercises the kit's own JSON loader against a fixture, then swaps in
+    ///      the freshly published repos -- the file cannot know their addresses.
+    function loadFromFixture(string memory _path, address _hubRepo, address _satRepo) external {
+        _loadTopologyFromJson(_path);
+        hub.rpc = vm.envString(hub.rpc);
+        hub.crossChainRepo = _hubRepo;
+        for (uint256 i = 0; i < satellites.length; i++) {
+            satellites[i].rpc = vm.envString(satellites[i].rpc);
+            satellites[i].crossChainRepo = _satRepo;
+        }
+    }
 
     function _createForks() internal override {
         hub.forkId = presetForks[0];
@@ -114,7 +127,7 @@ contract KitHarness is CrossChainDeploy {
 ///      of relying on its consumers'.
 ///
 ///      Skips without RPCs. Public endpoints are fine.
-contract CrossChainDeployKitTest is Test {
+contract CrossChainDeployKitTest is CrossChainDeployConformance {
     // Real OSx 1.4 deployments.
     address internal constant SEP_DAO_FACTORY = 0xB815791c233807D39b7430127975244B36C19C8e;
     address internal constant SEP_PSP = 0xC24188a73dc09aA7C721f96Ad8857B469C01dC9f;
@@ -332,5 +345,39 @@ contract CrossChainDeployKitTest is Test {
         // on a missing build, and here by both controllers existing at all.
         assertGt(kit.hubCfg().controller.code.length, 0, "hub controller");
         assertGt(kit.satCfg(0).controller.code.length, 0, "satellite controller");
+    }
+
+    // -------------------------------------------------------------------------
+    // Conformance and the config loader
+    // -------------------------------------------------------------------------
+
+    /// @notice The shared conformance suite, run against this deployment. A
+    ///         consumer inherits the same contract and points it at its own.
+    function test_fullRun_isConformant() public {
+        _run();
+
+        kit.selectHub();
+        assertConformant(kit.hubCfg(), SEP_PSP, vm.addr(DEPLOYER_KEY));
+        assertLaneWired(
+            kit.hubCfg().controller, ChainIds.BASE_SEPOLIA, kit.hubCfg().adapter, kit.satCfg(0).adapter
+        );
+
+        kit.selectSatellite(0);
+        assertConformant(kit.satCfg(0), BASESEP_PSP, vm.addr(DEPLOYER_KEY));
+        assertLaneWired(kit.satCfg(0).controller, ChainIds.SEPOLIA, kit.satCfg(0).adapter, kit.hubCfg().adapter);
+    }
+
+    /// @notice The kit's JSON loader fills the same fields the harness sets by
+    ///         hand, so the zero-code path reaches the same deployment.
+    function test_topologyLoadsFromJson() public {
+        KitHarness fresh = new KitHarness();
+        fresh.loadFromFixture("test/kit/fixtures/topology.json", address(0xBEEF), address(0xCAFE));
+
+        assertEq(fresh.hubCfg().chainId, ChainIds.SEPOLIA, "hub chain");
+        assertEq(fresh.satCfg(0).chainId, ChainIds.BASE_SEPOLIA, "satellite chain");
+        assertEq(fresh.hubCfg().daoFactory, SEP_DAO_FACTORY, "hub factory");
+        assertEq(fresh.satCfg(0).multisigRepo, BASESEP_MULTISIG_REPO, "satellite multisig repo");
+        assertEq(fresh.satCfg(0).minApprovals, 1, "threshold");
+        assertEq(fresh.hubCfg().members.length, 1, "roster");
     }
 }
