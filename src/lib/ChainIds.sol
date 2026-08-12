@@ -21,13 +21,4 @@ library ChainIds {
     uint256 internal constant INK = 57073;
     uint256 internal constant LINEA = 59144;
     uint256 internal constant KATANA = 747474;
-
-    // Testnets. Supported so a deployment can be rehearsed against the same
-    // adapter it will run on in production. Without them `CCIPAdapter` reverts
-    // `UNKNOWN_CHAIN_ID` on every testnet lane, which forces a consumer to
-    // subclass the adapter and override the table -- and then the rehearsal
-    // proves a different contract than the one that ships.
-    uint256 internal constant SEPOLIA = 11155111;
-    uint256 internal constant BASE_SEPOLIA = 84532;
-    uint256 internal constant ARBITRUM_SEPOLIA = 421614;
 }

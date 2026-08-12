@@ -22,9 +22,4 @@ library CCIPChainIds {
     uint64 internal constant INK = 3461204551265785888;
     uint64 internal constant LINEA = 4627098889531055414;
     uint64 internal constant KATANA = 2459028469735686113;
-
-    // Testnets. See `ChainIds` for why these are supported.
-    uint64 internal constant SEPOLIA = 16015286601757825753;
-    uint64 internal constant BASE_SEPOLIA = 10344971235874465080;
-    uint64 internal constant ARBITRUM_SEPOLIA = 3478487238524512106;
 }

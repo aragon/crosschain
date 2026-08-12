@@ -13,7 +13,6 @@ import { CrossChainController } from "@src/CrossChainController.sol";
 import { CrossChainControllerSetup } from "@src/CrossChainControllerSetup.sol";
 import { Executor } from "@src/Executor.sol";
 import { Permissions } from "@src/lib/Permissions.sol";
-import { ChainIds } from "@src/lib/ChainIds.sol";
 import { CrossChainDeployConformance, Deployed } from "./CrossChainDeployConformance.sol";
 
 /// @notice Fills the topology from values the test sets, and governs the hub
@@ -154,6 +153,12 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
     address internal constant SEP_ROUTER = 0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59;
     address internal constant BASESEP_ROUTER = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
 
+    // Local, because  maps mainnets only -- deliberately, it is
+    // audited production source.
+    uint256 internal constant SEPOLIA = 11_155_111;
+    uint256 internal constant BASE_SEPOLIA = 84_532;
+    uint256 internal constant ETHEREUM = 1;
+
     uint256 internal constant DEPLOYER_KEY = uint256(keccak256("crosschain.kit.test"));
 
     KitHarness internal kit;
@@ -176,10 +181,10 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         address baseRepo = _publishCrossChainRepo(satFork, BASESEP_REPO_FACTORY, deployer);
 
         kit.addChain(
-            ChainIds.SEPOLIA, SEP_DAO_FACTORY, SEP_PSP, SEP_REPO_FACTORY, sepRepo, SEP_MULTISIG_REPO, SEP_ROUTER
+            SEPOLIA, SEP_DAO_FACTORY, SEP_PSP, SEP_REPO_FACTORY, sepRepo, SEP_MULTISIG_REPO, SEP_ROUTER
         );
         kit.addChain(
-            ChainIds.BASE_SEPOLIA,
+            BASE_SEPOLIA,
             BASESEP_DAO_FACTORY,
             BASESEP_PSP,
             BASESEP_REPO_FACTORY,
@@ -225,15 +230,15 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
 
     function test_selectLandsOnTheConfiguredChain() public {
         kit.selectHub();
-        assertEq(block.chainid, ChainIds.SEPOLIA, "hub fork");
+        assertEq(block.chainid, SEPOLIA, "hub fork");
         kit.selectSatellite(0);
-        assertEq(block.chainid, ChainIds.BASE_SEPOLIA, "satellite fork");
+        assertEq(block.chainid, BASE_SEPOLIA, "satellite fork");
         kit.selectHub();
-        assertEq(block.chainid, ChainIds.SEPOLIA, "returned to hub");
+        assertEq(block.chainid, SEPOLIA, "returned to hub");
     }
 
     function test_selectRejectsAForkThatIsNotTheConfiguredChain() public {
-        kit.corruptHubChainId(ChainIds.ETHEREUM);
+        kit.corruptHubChainId(ETHEREUM);
         vm.expectRevert(bytes("RPC does not match the configured chain id"));
         kit.selectHub();
     }
@@ -335,13 +340,13 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
 
         kit.selectHub();
         (address localOnHub, address remoteOnHub) =
-            CrossChainController(payable(kit.hubCfg().controller)).chainToAdapter(ChainIds.BASE_SEPOLIA);
+            CrossChainController(payable(kit.hubCfg().controller)).chainToAdapter(BASE_SEPOLIA);
         assertEq(localOnHub, hubAdapter, "hub local");
         assertEq(remoteOnHub, satAdapter, "hub remote");
 
         kit.selectSatellite(0);
         (address localOnSat, address remoteOnSat) =
-            CrossChainController(payable(kit.satCfg(0).controller)).chainToAdapter(ChainIds.SEPOLIA);
+            CrossChainController(payable(kit.satCfg(0).controller)).chainToAdapter(SEPOLIA);
         assertEq(localOnSat, satAdapter, "satellite local");
         assertEq(remoteOnSat, hubAdapter, "satellite remote");
     }
@@ -369,12 +374,12 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         kit.selectHub();
         assertConformant(kit.hubDeployed(), SEP_PSP, vm.addr(DEPLOYER_KEY));
         assertLaneWired(
-            kit.hubCfg().controller, ChainIds.BASE_SEPOLIA, kit.hubCfg().adapter, kit.satCfg(0).adapter
+            kit.hubCfg().controller, BASE_SEPOLIA, kit.hubCfg().adapter, kit.satCfg(0).adapter
         );
 
         kit.selectSatellite(0);
         assertConformant(kit.satDeployed(0), BASESEP_PSP, vm.addr(DEPLOYER_KEY));
-        assertLaneWired(kit.satCfg(0).controller, ChainIds.SEPOLIA, kit.satCfg(0).adapter, kit.hubCfg().adapter);
+        assertLaneWired(kit.satCfg(0).controller, SEPOLIA, kit.satCfg(0).adapter, kit.hubCfg().adapter);
     }
 
     /// @notice The kit's JSON loader fills the same fields the harness sets by
@@ -383,8 +388,8 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         KitHarness fresh = new KitHarness();
         fresh.loadFromFixture("test/kit/fixtures/topology.json", address(0xBEEF), address(0xCAFE));
 
-        assertEq(fresh.hubCfg().chainId, ChainIds.SEPOLIA, "hub chain");
-        assertEq(fresh.satCfg(0).chainId, ChainIds.BASE_SEPOLIA, "satellite chain");
+        assertEq(fresh.hubCfg().chainId, SEPOLIA, "hub chain");
+        assertEq(fresh.satCfg(0).chainId, BASE_SEPOLIA, "satellite chain");
         assertEq(fresh.hubCfg().daoFactory, SEP_DAO_FACTORY, "hub factory");
         assertEq(fresh.satCfg(0).multisigRepo, BASESEP_MULTISIG_REPO, "satellite multisig repo");
         assertEq(fresh.satCfg(0).minApprovals, 1, "threshold");

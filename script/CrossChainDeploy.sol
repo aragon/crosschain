@@ -21,6 +21,7 @@ import { ICrossChainController } from "../src/ICrossChainController.sol";
 import { CrossChainControllerSetup } from "../src/CrossChainControllerSetup.sol";
 import { CCIPAdapter } from "../src/adapters/CCIP/CCIPAdapter.sol";
 import { BaseAdapter } from "../src/adapters/BaseAdapter.sol";
+import { TestnetCCIPAdapter } from "./testnet/TestnetCCIPAdapter.sol";
 
 /// @title CrossChainDeploy
 /// @notice Deploys a fresh DAO with the cross-chain controller on one hub chain
@@ -490,7 +491,7 @@ abstract contract CrossChainDeploy is Script {
         }
 
         _broadcast();
-        hub.adapter = address(new CCIPAdapter(hub.controller, hub.ccipRouter, hub.ccipFeeToken, trusted));
+        hub.adapter = _newAdapter(hub, trusted);
         vm.stopBroadcast();
         console.log("[4] hub adapter", hub.adapter);
     }
@@ -504,13 +505,39 @@ abstract contract CrossChainDeploy is Script {
             BaseAdapter.TrustedRemoteConfig({ standardChainId: hub.chainId, trustedRemote: hub.controller });
 
         _broadcast();
-        satellites[_i].adapter = address(
-            new CCIPAdapter(
-                satellites[_i].controller, satellites[_i].ccipRouter, satellites[_i].ccipFeeToken, trusted
-            )
-        );
+        satellites[_i].adapter = _newAdapter(satellites[_i], trusted);
         vm.stopBroadcast();
         console.log("[4] satellite adapter", satellites[_i].adapter);
+    }
+
+    /// @notice The adapter for the chain in scope.
+    /// @dev `CCIPAdapter`'s chain table is mainnet-only, and that is deliberate:
+    ///      it is audited production source and testnet entries do not belong in
+    ///      it. `TestnetCCIPAdapter` (in `script/`, outside audit scope)
+    ///      overrides just the table, in both directions, for the testnets.
+    ///
+    ///      The kit picks between them so a consumer writes no adapter code
+    ///      either way. The honest cost: a testnet rehearsal exercises the
+    ///      subclass, not the contract that ships. Everything security-relevant
+    ///      -- trusted-remote checks, the send and receive paths, fee handling --
+    ///      is the production contract regardless; only the id/selector lookup
+    ///      differs.
+    function _newAdapter(ChainCfg storage _chain, BaseAdapter.TrustedRemoteConfig[] memory _trusted)
+        private
+        returns (address)
+    {
+        if (_isTestnet(_chain.chainId)) {
+            return address(
+                new TestnetCCIPAdapter(_chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted)
+            );
+        }
+        return address(new CCIPAdapter(_chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted));
+    }
+
+    /// @dev Must match `TestnetCCIPAdapter`'s table. A chain listed here but not
+    ///      there gets an adapter that reverts `UNKNOWN_CHAIN_ID` on every lane.
+    function _isTestnet(uint256 _chainId) private pure returns (bool) {
+        return _chainId == 11_155_111 || _chainId == 84_532 || _chainId == 421_614;
     }
 
     function _routeHub() private {
