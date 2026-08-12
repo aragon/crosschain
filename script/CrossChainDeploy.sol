@@ -16,11 +16,11 @@ import { PermissionManager } from "@aragon/osx/core/permission/PermissionManager
 import { IPluginSetup } from "@aragon/osx-commons-contracts/src/plugin/setup/IPluginSetup.sol";
 import { IExecutor, Action } from "@aragon/osx-commons-contracts/src/executors/IExecutor.sol";
 
-import { CrossChainController } from "@src/CrossChainController.sol";
-import { ICrossChainController } from "@src/ICrossChainController.sol";
-import { CrossChainControllerSetup } from "@src/CrossChainControllerSetup.sol";
-import { CCIPAdapter } from "@src/adapters/CCIP/CCIPAdapter.sol";
-import { BaseAdapter } from "@src/adapters/BaseAdapter.sol";
+import { CrossChainController } from "../src/CrossChainController.sol";
+import { ICrossChainController } from "../src/ICrossChainController.sol";
+import { CrossChainControllerSetup } from "../src/CrossChainControllerSetup.sol";
+import { CCIPAdapter } from "../src/adapters/CCIP/CCIPAdapter.sol";
+import { BaseAdapter } from "../src/adapters/BaseAdapter.sol";
 
 /// @title CrossChainDeploy
 /// @notice Deploys a fresh DAO with the cross-chain controller on one hub chain

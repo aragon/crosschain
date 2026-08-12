@@ -57,7 +57,12 @@ contract Deploy is CrossChainDeploy {
 ```
 
 Available inside a hook: `_installPlugin`, `_publishRepo`, `_grantExecute`,
-`_grantRoot`, `_revokeRoot`, `_addGovernor`, `_createBareDao`.
+`_grantRoot`, `_revokeRoot`, `_addGovernor`, and `_installMultisigGovernance` if
+you want the default on the hub too.
+
+DAO creation is not among them, deliberately. The kit has already created every
+DAO by the time a hook runs, which is what makes "the deployer can act as this
+DAO" structural rather than something you have to arrange.
 
 `_addGovernor` takes plural declarations, and should. Real governance is often
 several contracts — two staged processors plus an emergency Safe, say. A single
