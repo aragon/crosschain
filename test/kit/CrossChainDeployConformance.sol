@@ -7,9 +7,9 @@ import { Test } from "forge-std/Test.sol";
 import { DAO } from "@aragon/osx/core/dao/DAO.sol";
 
 import { CrossChainDeploy } from "../../script/CrossChainDeploy.sol";
-import { CrossChainController } from "@src/CrossChainController.sol";
-import { Executor } from "@src/Executor.sol";
-import { Permissions } from "@src/lib/Permissions.sol";
+import { CrossChainController } from "../../src/CrossChainController.sol";
+import { Executor } from "../../src/Executor.sol";
+import { Permissions } from "../../src/lib/Permissions.sol";
 
 /// @title CrossChainDeployConformance
 /// @notice The properties a finished deployment must have, as assertions a
