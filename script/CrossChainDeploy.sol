@@ -4,6 +4,24 @@ pragma solidity ^0.8.17;
 
 import { Script, console } from "forge-std/Script.sol";
 
+import { DAO } from "@aragon/osx/core/dao/DAO.sol";
+import { DAOFactory } from "@aragon/osx/framework/dao/DAOFactory.sol";
+import { PluginRepo } from "@aragon/osx/framework/plugin/repo/PluginRepo.sol";
+import { PluginRepoFactory } from "@aragon/osx/framework/plugin/repo/PluginRepoFactory.sol";
+import { PluginSetupProcessor } from "@aragon/osx/framework/plugin/setup/PluginSetupProcessor.sol";
+import {
+    PluginSetupRef, hashHelpers
+} from "@aragon/osx/framework/plugin/setup/PluginSetupProcessorHelpers.sol";
+import { PermissionManager } from "@aragon/osx/core/permission/PermissionManager.sol";
+import { IPluginSetup } from "@aragon/osx-commons-contracts/src/plugin/setup/IPluginSetup.sol";
+import { IExecutor, Action } from "@aragon/osx-commons-contracts/src/executors/IExecutor.sol";
+
+import { CrossChainController } from "@src/CrossChainController.sol";
+import { ICrossChainController } from "@src/ICrossChainController.sol";
+import { CrossChainControllerSetup } from "@src/CrossChainControllerSetup.sol";
+import { CCIPAdapter } from "@src/adapters/CCIP/CCIPAdapter.sol";
+import { BaseAdapter } from "@src/adapters/BaseAdapter.sol";
+
 /// @title CrossChainDeploy
 /// @notice Deploys a fresh DAO with the cross-chain controller on one hub chain
 ///         and N satellite chains, in a single run.
@@ -39,6 +57,9 @@ abstract contract CrossChainDeploy is Script {
         address psp;
         address pluginRepoFactory;
         address crossChainRepo;
+        /// @dev Only needed by the default satellite installer; a consumer that
+        ///      overrides `_configureSatellite` can leave it zero.
+        address multisigRepo;
         address ccipRouter;
         /// @dev `address(0)` means CCIP fees are paid in the chain's native currency.
         address ccipFeeToken;
@@ -93,5 +114,593 @@ abstract contract CrossChainDeploy is Script {
     /// @notice How many chains this deployment spans, hub included.
     function chainCount() public view returns (uint256) {
         return satellites.length + 1;
+    }
+
+    // -------------------------------------------------------------------------
+    // Signing
+    // -------------------------------------------------------------------------
+
+    /// @notice The account every phase broadcasts from.
+    address internal deployer;
+
+    /// @dev Zero means "whatever forge's own `--account` / `--ledger` /
+    ///      `--private-key` resolved", which is what production uses. A non-zero
+    ///      key is the test path: fork suites need a specific funded address,
+    ///      and passing it as an argument keeps them off `vm.setEnv`, which is
+    ///      process-global and races concurrent tests.
+    ///
+    ///      Deliberately not read from the environment. A plaintext key in a
+    ///      shell is visible to every process, lands in history, and leaves no
+    ///      record of which key signed a deployment.
+    uint256 internal deployerKey;
+
+    function _broadcast() internal {
+        if (deployerKey == 0) {
+            vm.startBroadcast();
+        } else {
+            vm.startBroadcast(deployerKey);
+        }
+    }
+
+    /// @dev `msg.sender` inside the script's own frame is whoever called the
+    ///      entry point, NOT the broadcaster — `startBroadcast` changes the
+    ///      sender of the calls the script MAKES, not the frame evaluating the
+    ///      arguments. Reading `msg.sender` to mean "the deployer" silently
+    ///      addresses the wrong account.
+    function _resolveDeployer() internal view returns (address) {
+        return deployerKey == 0 ? msg.sender : vm.addr(deployerKey);
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 2 — the DAOs
+    // -------------------------------------------------------------------------
+
+    /// @notice A DAO on every chain, created with NO plugins.
+    /// @dev `DAOFactory` still registers it — so the Aragon App indexes it — and,
+    ///      seeing an empty plugin array, grants `EXECUTE_PERMISSION` to the
+    ///      caller. That grant is what lets every later phase run unattended,
+    ///      and the final phase is what takes it back.
+    ///
+    ///      The kit creates every DAO, without exception. That is what makes
+    ///      "the deployer can act as this DAO" structural rather than something
+    ///      a consumer has to remember to arrange.
+    function _createDaos() internal {
+        _select(hub);
+        _broadcast();
+        hub.dao = _createBareDao(hub);
+        vm.stopBroadcast();
+        console.log("[2] hub DAO", hub.dao);
+
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _select(satellites[i]);
+            _broadcast();
+            satellites[i].dao = _createBareDao(satellites[i]);
+            vm.stopBroadcast();
+            console.log("[2] satellite DAO", satellites[i].dao);
+        }
+    }
+
+    function _createBareDao(ChainCfg storage _chain) private returns (address) {
+        (DAO created,) = DAOFactory(_chain.daoFactory).createDao(
+            DAOFactory.DAOSettings({
+                trustedForwarder: address(0),
+                daoURI: "",
+                subdomain: _chain.daoSubdomain,
+                metadata: _chain.daoMetadata
+            }),
+            new DAOFactory.PluginSettings[](0)
+        );
+        return address(created);
+    }
+
+    // -------------------------------------------------------------------------
+    // Available to governance hooks
+    // -------------------------------------------------------------------------
+
+    bytes32 internal constant ROOT_PERMISSION_ID = keccak256("ROOT_PERMISSION");
+    bytes32 internal constant EXECUTE_PERMISSION_ID = keccak256("EXECUTE_PERMISSION");
+
+    /// @notice Prepares an installation and applies it in the same transaction.
+    /// @dev This is what makes an action-bundle file unnecessary.
+    ///      `prepareInstallation` returns the permission set and helpers ONCE —
+    ///      the PSP stores only a hash of them, and `applyInstallation` rejects
+    ///      any mismatch — so a step-by-step flow has to carry them between
+    ///      processes somehow. Applying inline removes the requirement instead
+    ///      of working around it.
+    ///
+    ///      Three actions, not five: they execute AS the DAO, and
+    ///      `PluginSetupProcessor._canApply` short-circuits on
+    ///      `msg.sender == _dao`, so no `APPLY_INSTALLATION_PERMISSION` grant is
+    ///      needed. The PSP holds `ROOT` for one transaction and not a block
+    ///      longer.
+    ///
+    ///      Must be called inside an active broadcast.
+    function _installPlugin(ChainCfg storage _chain, PluginRepo _repo, PluginRepo.Tag memory _tag, bytes memory _data)
+        internal
+        returns (address plugin, address[] memory helpers)
+    {
+        PluginSetupRef memory ref = PluginSetupRef({ versionTag: _tag, pluginSetupRepo: _repo });
+
+        IPluginSetup.PreparedSetupData memory prepared;
+        (plugin, prepared) = PluginSetupProcessor(_chain.psp).prepareInstallation(
+            _chain.dao, PluginSetupProcessor.PrepareInstallationParams({ pluginSetupRef: ref, data: _data })
+        );
+        helpers = prepared.helpers;
+
+        Action[] memory actions = new Action[](3);
+        actions[0].to = _chain.dao;
+        actions[0].data =
+            abi.encodeCall(PermissionManager.grant, (_chain.dao, _chain.psp, ROOT_PERMISSION_ID));
+        actions[1].to = _chain.psp;
+        actions[1].data = abi.encodeCall(
+            PluginSetupProcessor.applyInstallation,
+            (
+                _chain.dao,
+                PluginSetupProcessor.ApplyInstallationParams({
+                    pluginSetupRef: ref,
+                    plugin: plugin,
+                    permissions: prepared.permissions,
+                    helpersHash: hashHelpers(prepared.helpers)
+                })
+            )
+        );
+        actions[2].to = _chain.dao;
+        actions[2].data =
+            abi.encodeCall(PermissionManager.revoke, (_chain.dao, _chain.psp, ROOT_PERMISSION_ID));
+
+        IExecutor(_chain.dao).execute(bytes32(0), actions, 0);
+    }
+
+    /// @notice Publishes a plugin repo on the chain in scope.
+    /// @dev For consumers self-publishing rather than installing from a repo
+    ///      someone else deployed. Satellite chains rarely have one published.
+    ///      Empty subdomain: the repo is addressed directly, so no ENS
+    ///      registration is needed. Must be called inside an active broadcast.
+    function _publishRepo(ChainCfg storage _chain, address _setup) internal returns (PluginRepo) {
+        return PluginRepoFactory(_chain.pluginRepoFactory).createPluginRepoWithFirstVersion(
+            "", _setup, _resolveDeployer(), bytes("kit"), bytes("kit")
+        );
+    }
+
+    /// @notice Grants `EXECUTE` on this chain's DAO, executed AS the DAO.
+    /// @dev Only works while the deployer still holds `EXECUTE` itself, i.e.
+    ///      before the handover. Must be called inside an active broadcast.
+    function _grantExecute(ChainCfg storage _chain, address _who) internal {
+        _daoAction(_chain, abi.encodeCall(PermissionManager.grant, (_chain.dao, _who, EXECUTE_PERMISSION_ID)));
+    }
+
+    function _grantRoot(ChainCfg storage _chain, address _who) internal {
+        _daoAction(_chain, abi.encodeCall(PermissionManager.grant, (_chain.dao, _who, ROOT_PERMISSION_ID)));
+    }
+
+    function _revokeRoot(ChainCfg storage _chain, address _who) internal {
+        _daoAction(_chain, abi.encodeCall(PermissionManager.revoke, (_chain.dao, _who, ROOT_PERMISSION_ID)));
+    }
+
+    /// @dev Executes one call AS the DAO, against the DAO itself. For permission
+    ///      changes, where the DAO is both the caller and the target.
+    function _daoAction(ChainCfg storage _chain, bytes memory _data) private {
+        _daoActionTo(_chain, _chain.dao, _data);
+    }
+
+    /// @dev Executes one call AS the DAO, against `_target`. Needed wherever the
+    ///      DAO acts on something else — `updateConfig` on the controller, say —
+    ///      which is not the same thing as acting on itself.
+    function _daoActionTo(ChainCfg storage _chain, address _target, bytes memory _data) private {
+        Action[] memory actions = new Action[](1);
+        actions[0].to = _target;
+        actions[0].data = _data;
+        IExecutor(_chain.dao).execute(bytes32(0), actions, 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 3 — the controllers
+    // -------------------------------------------------------------------------
+
+    /// @notice The release this kit installs.
+    /// @dev Pinned rather than read as "latest": in OSx a new RELEASE is an
+    ///      incompatible plugin, not a patch.
+    uint8 internal constant CROSS_CHAIN_RELEASE = 1;
+
+    /// @notice Install parameter: let the setup mint a dedicated `Executor` and
+    ///         transfer its ownership to the controller.
+    /// @dev Not a parameter a consumer can change, and that is the point. Naming
+    ///      the DAO instead sets `_executorIsDao` in `CrossChainControllerSetup`,
+    ///      which grants the controller `EXECUTE_PERMISSION` **on the DAO** — so
+    ///      any inbound message clearing the adapter would execute with full DAO
+    ///      authority. Inbound payloads run as the `Executor` instead, and that
+    ///      is the address remote roles must be granted to.
+    address internal constant DEDICATED_EXECUTOR = address(0);
+
+    /// @notice The build resolved on the hub, then required on every satellite.
+    uint16 internal pinnedBuild;
+
+    /// @notice Installs the controller on every chain.
+    /// @dev One sweep, and it must finish everywhere before phase 4 starts on
+    ///      any chain: an adapter takes its trusted remote — the controller on
+    ///      the OTHER side — in the constructor and has no setter.
+    function _installControllers(uint256 _minFailedMessageGas) internal {
+        require(_minFailedMessageGas > 0, "minFailedMessageGas of 0 disables the failure-record reserve");
+
+        _installController(hub, _minFailedMessageGas);
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _installController(satellites[i], _minFailedMessageGas);
+        }
+    }
+
+    function _installController(ChainCfg storage _chain, uint256 _minFailedMessageGas) private {
+        _select(_chain);
+
+        PluginRepo repo = PluginRepo(_chain.crossChainRepo);
+        _requireInstallableRepo(repo);
+
+        // Resolved as "latest" on the HUB only, then that exact build is demanded
+        // everywhere else. Each chain has its own repo with its own publishing
+        // history, so asking each for "latest" independently puts different
+        // builds on the two ends of a lane whenever one chain is ahead — or
+        // whenever a build lands mid-run, which is a slow sweep across several
+        // chains. A satellite whose repo lacks the build reverts here.
+        PluginRepo.Version memory version;
+        if (pinnedBuild == 0) {
+            version = repo.getLatestVersion(CROSS_CHAIN_RELEASE);
+            pinnedBuild = version.tag.build;
+        } else {
+            version = repo.getVersion(PluginRepo.Tag({ release: CROSS_CHAIN_RELEASE, build: pinnedBuild }));
+        }
+
+        // The pause guardian is always this chain's own DAO, and not
+        // configurable. The setup grants the DAO `PAUSE_PERMISSION`
+        // unconditionally, so any OTHER guardian would be an ADDITIONAL one that
+        // can freeze every message on the chain, never receives `UNPAUSE`, and
+        // is not revoked by an uninstall.
+        bytes memory data = CrossChainControllerSetup(version.pluginSetup).encodeInstallationParameters(
+            DEDICATED_EXECUTOR, _chain.dao, _minFailedMessageGas
+        );
+
+        _broadcast();
+        (address plugin, address[] memory helpers) = _installPlugin(_chain, repo, version.tag, data);
+        vm.stopBroadcast();
+
+        require(helpers.length == 1, "unexpected helper count from CrossChainControllerSetup");
+        _chain.controller = plugin;
+        _chain.executor = helpers[0];
+
+        console.log("[3] controller", plugin);
+        console.log("    executor (owner = controller)", helpers[0]);
+    }
+
+    /// @dev The repo address is an input, so a wrong one is a config error worth
+    ///      catching loudly: a non-repo reverts uninformatively deep inside the
+    ///      PSP, and a wrong-but-real repo would install some other project's
+    ///      plugin as this DAO's controller. This cannot tell you it is the
+    ///      RIGHT repo — only that it is a repo with a published build.
+    function _requireInstallableRepo(PluginRepo _repo) private view {
+        require(address(_repo).code.length > 0, "crossChainRepo has no code");
+        require(_repo.latestRelease() >= CROSS_CHAIN_RELEASE, "crossChainRepo has no published release");
+        require(_repo.buildCount(CROSS_CHAIN_RELEASE) > 0, "crossChainRepo has no build for the release");
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 4 — adapters and routing
+    // -------------------------------------------------------------------------
+
+    /// @notice Deploys every adapter, then wires every lane.
+    /// @dev Hub-and-spoke: the hub adapter trusts every satellite controller,
+    ///      and each satellite adapter trusts only the hub. Satellites never
+    ///      talk to each other.
+    function _deployAdaptersAndRoute() internal {
+        _deployHubAdapter();
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _deploySatelliteAdapter(i);
+        }
+
+        _routeHub();
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _routeSatellite(i);
+        }
+    }
+
+    function _deployHubAdapter() private {
+        _select(hub);
+
+        BaseAdapter.TrustedRemoteConfig[] memory trusted =
+            new BaseAdapter.TrustedRemoteConfig[](satellites.length);
+        for (uint256 i = 0; i < satellites.length; i++) {
+            require(satellites[i].controller != address(0), "satellite controller missing: install controllers first");
+            trusted[i] = BaseAdapter.TrustedRemoteConfig({
+                standardChainId: satellites[i].chainId,
+                trustedRemote: satellites[i].controller
+            });
+        }
+
+        _broadcast();
+        hub.adapter = address(new CCIPAdapter(hub.controller, hub.ccipRouter, hub.ccipFeeToken, trusted));
+        vm.stopBroadcast();
+        console.log("[4] hub adapter", hub.adapter);
+    }
+
+    function _deploySatelliteAdapter(uint256 _i) private {
+        _select(satellites[_i]);
+        require(hub.controller != address(0), "hub controller missing: install controllers first");
+
+        BaseAdapter.TrustedRemoteConfig[] memory trusted = new BaseAdapter.TrustedRemoteConfig[](1);
+        trusted[0] =
+            BaseAdapter.TrustedRemoteConfig({ standardChainId: hub.chainId, trustedRemote: hub.controller });
+
+        _broadcast();
+        satellites[_i].adapter = address(
+            new CCIPAdapter(
+                satellites[_i].controller, satellites[_i].ccipRouter, satellites[_i].ccipFeeToken, trusted
+            )
+        );
+        vm.stopBroadcast();
+        console.log("[4] satellite adapter", satellites[_i].adapter);
+    }
+
+    function _routeHub() private {
+        uint256[] memory chainIds = new uint256[](satellites.length);
+        ICrossChainController.ChainConfig[] memory configs =
+            new ICrossChainController.ChainConfig[](satellites.length);
+
+        for (uint256 i = 0; i < satellites.length; i++) {
+            chainIds[i] = satellites[i].chainId;
+            configs[i] = ICrossChainController.ChainConfig({
+                localAdapter: hub.adapter,
+                remoteAdapter: satellites[i].adapter
+            });
+        }
+
+        _updateConfig(hub, chainIds, configs);
+    }
+
+    function _routeSatellite(uint256 _i) private {
+        uint256[] memory chainIds = new uint256[](1);
+        chainIds[0] = hub.chainId;
+
+        ICrossChainController.ChainConfig[] memory configs = new ICrossChainController.ChainConfig[](1);
+        configs[0] = ICrossChainController.ChainConfig({
+            localAdapter: satellites[_i].adapter,
+            remoteAdapter: hub.adapter
+        });
+
+        _updateConfig(satellites[_i], chainIds, configs);
+    }
+
+    /// @dev `updateConfig` is gated by `MANAGE_CONTROLLER_CONFIG_PERMISSION`,
+    ///      which the installation granted to the DAO, so it runs through the DAO.
+    function _updateConfig(
+        ChainCfg storage _chain,
+        uint256[] memory _chainIds,
+        ICrossChainController.ChainConfig[] memory _configs
+    )
+        private
+    {
+        _select(_chain);
+        _broadcast();
+        // Targets the CONTROLLER, not the DAO: `updateConfig` is gated by
+        // `MANAGE_CONTROLLER_CONFIG_PERMISSION`, which the installation granted
+        // to the DAO, so the DAO is the caller and the controller is the callee.
+        _daoActionTo(
+            _chain, _chain.controller, abi.encodeCall(CrossChainController.updateConfig, (_chainIds, _configs))
+        );
+        vm.stopBroadcast();
+        console.log("[4] routed lanes", _chainIds.length);
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 5 — governance
+    // -------------------------------------------------------------------------
+
+    /// @notice Install whatever governs the hub DAO.
+    /// @dev Runs LAST, after the cross-chain stack is complete, with the
+    ///      deployer still holding `EXECUTE` on every DAO. So it can install
+    ///      plugins, grant permissions, seed a treasury — anything — and it sees
+    ///      final controller, executor and adapter addresses.
+    ///
+    ///      MUST declare at least one governor via {_addGovernor}. The kit
+    ///      verifies them and refuses to hand over otherwise; that check is not
+    ///      overridable.
+    function _configureHub() internal virtual;
+
+    /// @notice Install whatever governs satellite `_i`.
+    /// @dev Defaults to a Multisig from `multisigRepo`. Overridable — the
+    ///      postcondition is what protects the deployment, so a project with its
+    ///      own L2 governance is not forced to carry a multisig it will not use.
+    function _configureSatellite(uint256 _i) internal virtual {
+        _installMultisigGovernance(satellites[_i]);
+    }
+
+    /// @notice Declares an address that must be able to execute as this DAO.
+    /// @dev Plural on purpose. Real governance is often several contracts — two
+    ///      staged processors plus an emergency Safe, say — and a single-address
+    ///      check pointed at the Safe would pass while a processor's grant had
+    ///      silently failed, leaving a DAO that looks governed and cannot pass a
+    ///      proposal.
+    function _addGovernor(ChainCfg storage _chain, address _governor) internal {
+        _chain.governors.push(_governor);
+    }
+
+    /// @notice The kit's satellite governance: a Multisig that can act as the DAO.
+    /// @dev The `_grantExecute` at the end is belt-and-braces, not the load-
+    ///      bearing step — and the distinction is worth stating because it is
+    ///      easy to get backwards. Aragon's published `MultisigSetup` DOES grant
+    ///      the plugin `EXECUTE` on the DAO as part of its permission set, so
+    ///      against that repo this call is a no-op (OSx treats a repeat grant as
+    ///      one). But `multisigRepo` is an input, and not every setup does:
+    ///      alchemix ships a custom `MultisigSetup` that grants the DAO rights
+    ///      over the plugin and makes proposal execution permissionless while
+    ///      granting NO `EXECUTE` on the DAO. Installed from that repo without
+    ///      this line, the DAO would be exactly as frozen as with no governance
+    ///      at all.
+    ///
+    ///      So the grant makes this installer correct for whatever repo it is
+    ///      pointed at, rather than only for the one the tests happen to use.
+    ///      `_assertGovernable` is the real backstop either way.
+    function _installMultisigGovernance(ChainCfg storage _chain) internal {
+        require(_chain.multisigRepo != address(0), "multisigRepo missing: needed by the default governance");
+        require(_chain.members.length > 0, "governance roster is empty");
+        require(_chain.minApprovals > 0, "minApprovals must be at least 1");
+        require(_chain.minApprovals <= _chain.members.length, "minApprovals exceeds the roster size");
+
+        PluginRepo repo = PluginRepo(_chain.multisigRepo);
+        PluginRepo.Version memory version = repo.getLatestVersion(repo.latestRelease());
+
+        bytes memory data = abi.encode(
+            _chain.members,
+            MultisigSettings({ onlyListed: true, minApprovals: _chain.minApprovals }),
+            TargetConfig({ target: address(0), operation: 0 }),
+            bytes("")
+        );
+
+        _broadcast();
+        (address plugin,) = _installPlugin(_chain, repo, version.tag, data);
+        _grantExecute(_chain, plugin);
+        vm.stopBroadcast();
+
+        _addGovernor(_chain, plugin);
+        console.log("[5] multisig governance", plugin);
+    }
+
+    /// @dev Declared locally: the Multisig plugin is not a dependency of this
+    ///      package, and the encoding was verified against the live setup rather
+    ///      than assumed. `target: address(0)` resolves to the DAO, so the
+    ///      multisig acts THROUGH it; `operation: 0` is `Call`.
+    struct MultisigSettings {
+        bool onlyListed;
+        uint16 minApprovals;
+    }
+
+    struct TargetConfig {
+        address target;
+        uint8 operation;
+    }
+
+    function _configureGovernance() internal {
+        _select(hub);
+        _configureHub();
+        _assertGovernable(hub);
+
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _select(satellites[i]);
+            _configureSatellite(i);
+            _assertGovernable(satellites[i]);
+        }
+    }
+
+    /// @notice Every DAO must end able to act. Not overridable, checked twice.
+    /// @dev The failure this prevents: a DAO with no `EXECUTE` holder is inert
+    ///      forever, and the cross-chain controller grants
+    ///      `MANAGE_CONTROLLER_CONFIG`, `CANCEL_MESSAGE`, `SWEEP`, `PAUSE`,
+    ///      `UNPAUSE` and `UPGRADE_PLUGIN` to the DAO and to nobody else. So a
+    ///      frozen DAO means a wrong lane cannot be repaired, a stranded message
+    ///      cannot be cancelled, a paused controller cannot be unpaused, and an
+    ///      upstream security fix cannot be applied. Permanently.
+    function _assertGovernable(ChainCfg storage _chain) internal view {
+        require(_chain.governors.length > 0, "DAO has no governor: nothing could act as it after handover");
+        for (uint256 i = 0; i < _chain.governors.length; i++) {
+            require(
+                DAO(payable(_chain.dao)).hasPermission(
+                    _chain.dao, _chain.governors[i], EXECUTE_PERMISSION_ID, ""
+                ),
+                "declared governor cannot execute as the DAO"
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 6 — handover
+    // -------------------------------------------------------------------------
+
+    /// @notice Takes `EXECUTE` away from the deployer on every chain.
+    /// @dev MUST be last: every phase above is authorised by this permission.
+    ///      Irreversible, so the governability check runs once more immediately
+    ///      before it rather than being trusted from phase 5.
+    ///
+    ///      Self-revoking, and safe: the deployer executes it AS the DAO, and the
+    ///      DAO holds `ROOT` on itself, so this is the deployer's last act with
+    ///      the authority it is giving up. A failed transaction leaves the
+    ///      permission in place and can be retried.
+    function _handOver() internal {
+        _revokeDeployer(hub);
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _revokeDeployer(satellites[i]);
+        }
+    }
+
+    function _revokeDeployer(ChainCfg storage _chain) private {
+        _select(_chain);
+        _assertGovernable(_chain);
+
+        _broadcast();
+        _daoAction(
+            _chain, abi.encodeCall(PermissionManager.revoke, (_chain.dao, deployer, EXECUTE_PERMISSION_ID))
+        );
+        vm.stopBroadcast();
+        console.log("[6] deployer EXECUTE revoked on", _chain.chainId);
+    }
+
+    // -------------------------------------------------------------------------
+    // Entry point
+    // -------------------------------------------------------------------------
+
+    function run() public {
+        runWith(0);
+    }
+
+    /// @notice The whole deployment, in order.
+    /// @dev The order is the specification. Controllers are one sweep because an
+    ///      adapter needs the controller on the other side; adapters precede
+    ///      routing for the same reason one step further out; governance is last
+    ///      but one because nothing earlier needs it; the handover is last
+    ///      because it removes the authority every phase above used.
+    function runWith(uint256 _deployerKey) public {
+        deployerKey = _deployerKey;
+        deployer = _resolveDeployer();
+
+        _loadTopology();
+        _createForks();
+        phases();
+    }
+
+    /// @notice Every phase against forks that already exist.
+    /// @dev Split from {runWith} so a caller that must touch the forks first can
+    ///      still drive the real sequence — a fork suite funds the deployer on
+    ///      each chain, which has to happen on the same forks the phases use.
+    function phases() public {
+        _createDaos();
+        _installControllers(minFailedMessageGas);
+        _deployAdaptersAndRoute();
+        _configureGovernance();
+        _handOver();
+        _report();
+    }
+
+    /// @notice Gas the controller withholds so a failed inbound message is
+    ///         recorded as `Delivered` rather than reverting the whole delivery.
+    /// @dev Never zero: a zero reserve lets an out-of-gas payload revert the
+    ///      delivery, recording nothing, and the message is then unreachable by
+    ///      both `retryMessage` and `cancelMessage`.
+    uint256 internal minFailedMessageGas = 45_000;
+
+    /// @dev The run's only output. Capture it — the kit writes no files.
+    function _report() internal {
+        console.log("================ DEPLOYMENT COMPLETE ================");
+        _reportChain("hub", hub);
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _reportChain("satellite", satellites[i]);
+        }
+        console.log("Fund the HUB controller with native currency for CCIP fees:", hub.controller);
+        console.log("Never the adapter: assets sent there are stranded, it has no rescue path.");
+    }
+
+    function _reportChain(string memory _label, ChainCfg storage _chain) private view {
+        console.log("---", _label, _chain.chainId);
+        console.log("  dao       ", _chain.dao);
+        console.log("  controller", _chain.controller);
+        console.log("  executor  ", _chain.executor);
+        console.log("  adapter   ", _chain.adapter);
+        for (uint256 i = 0; i < _chain.governors.length; i++) {
+            console.log("  governor  ", _chain.governors[i]);
+        }
     }
 }
