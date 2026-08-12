@@ -6,10 +6,26 @@ import { Test } from "forge-std/Test.sol";
 
 import { DAO } from "@aragon/osx/core/dao/DAO.sol";
 
-import { CrossChainDeploy } from "../../script/CrossChainDeploy.sol";
 import { CrossChainController } from "../../src/CrossChainController.sol";
 import { Executor } from "../../src/Executor.sol";
 import { Permissions } from "../../src/lib/Permissions.sol";
+
+/// @notice One chain's produced addresses.
+/// @dev Deliberately narrow, rather than the kit's `ChainCfg`. `ChainCfg`
+///      carries every config input too, and returning it across an ABI boundary
+///      generates an encoder heavy enough to blow the stack in a consumer that
+///      compiles without `via_ir` — which is what happened the first time a
+///      consumer inherited this suite. Assertions only ever need the outputs.
+///
+///      File-level so a consumer's harness can build one without inheriting the
+///      assertions.
+struct Deployed {
+    address dao;
+    address controller;
+    address executor;
+    address adapter;
+    address[] governors;
+}
 
 /// @title CrossChainDeployConformance
 /// @notice The properties a finished deployment must have, as assertions a
@@ -29,7 +45,7 @@ import { Permissions } from "../../src/lib/Permissions.sol";
 ///      while standing on that chain's fork.
 abstract contract CrossChainDeployConformance is Test {
     /// @notice Every property, for one chain. Call while that chain is selected.
-    function assertConformant(CrossChainDeploy.ChainCfg memory _c, address _psp, address _deployer) internal view {
+    function assertConformant(Deployed memory _c, address _psp, address _deployer) internal view {
         assertArtefactsExist(_c);
         assertNoEoaCanExecute(_c, _deployer);
         assertGovernorsCanExecute(_c);
@@ -42,7 +58,7 @@ abstract contract CrossChainDeployConformance is Test {
     /// @dev Each artefact must have code ON THIS CHAIN. Addresses can coincide
     ///      across chains — same factory nonce — so holding a non-zero address
     ///      proves nothing about where the thing actually is.
-    function assertArtefactsExist(CrossChainDeploy.ChainCfg memory _c) internal view {
+    function assertArtefactsExist(Deployed memory _c) internal view {
         assertGt(_c.dao.code.length, 0, "conformance: dao has no code on this chain");
         assertGt(_c.controller.code.length, 0, "conformance: controller has no code on this chain");
         assertGt(_c.executor.code.length, 0, "conformance: executor has no code on this chain");
@@ -51,7 +67,7 @@ abstract contract CrossChainDeployConformance is Test {
 
     /// @dev Prevents: the deploying key keeping permanent unconditional
     ///      authority over a live DAO, bypassing its governance entirely.
-    function assertNoEoaCanExecute(CrossChainDeploy.ChainCfg memory _c, address _deployer) internal view {
+    function assertNoEoaCanExecute(Deployed memory _c, address _deployer) internal view {
         DAO dao = DAO(payable(_c.dao));
         assertFalse(
             dao.hasPermission(_c.dao, _deployer, dao.EXECUTE_PERMISSION_ID(), ""),
@@ -64,7 +80,7 @@ abstract contract CrossChainDeployConformance is Test {
     ///      UPGRADE_PLUGIN to the DAO and to nobody else, so a frozen DAO means
     ///      a wrong lane, a stranded message and an upstream security fix are
     ///      all permanently out of reach.
-    function assertGovernorsCanExecute(CrossChainDeploy.ChainCfg memory _c) internal view {
+    function assertGovernorsCanExecute(Deployed memory _c) internal view {
         DAO dao = DAO(payable(_c.dao));
         assertGt(_c.governors.length, 0, "conformance: no governor declared for this DAO");
         for (uint256 i = 0; i < _c.governors.length; i++) {
@@ -78,7 +94,7 @@ abstract contract CrossChainDeployConformance is Test {
     /// @dev Prevents: an inbound cross-chain message executing with full DAO
     ///      authority. If the controller holds EXECUTE on its DAO, anything that
     ///      clears the adapter can do anything the DAO can.
-    function assertControllerHoldsNothingOnItsDao(CrossChainDeploy.ChainCfg memory _c) internal view {
+    function assertControllerHoldsNothingOnItsDao(Deployed memory _c) internal view {
         DAO dao = DAO(payable(_c.dao));
         assertFalse(
             dao.hasPermission(_c.dao, _c.controller, dao.EXECUTE_PERMISSION_ID(), ""),
@@ -89,7 +105,7 @@ abstract contract CrossChainDeployConformance is Test {
     /// @dev The flip side: inbound payloads must still have somewhere to run, and
     ///      that somewhere is a helper owned by the controller — so remote roles
     ///      are granted to the executor, never to the DAO or the controller.
-    function assertDedicatedExecutor(CrossChainDeploy.ChainCfg memory _c) internal view {
+    function assertDedicatedExecutor(Deployed memory _c) internal view {
         assertTrue(_c.executor != _c.dao, "conformance: the executor is the DAO");
         assertTrue(_c.executor != _c.controller, "conformance: the executor is the controller");
         assertEq(
@@ -102,7 +118,7 @@ abstract contract CrossChainDeployConformance is Test {
     /// @dev Prevents: the PSP keeping ROOT on a DAO after an installation. It
     ///      needs ROOT for exactly one transaction; anything longer is a second
     ///      unconditional authority over the DAO.
-    function assertPspReturnedRoot(CrossChainDeploy.ChainCfg memory _c, address _psp) internal view {
+    function assertPspReturnedRoot(Deployed memory _c, address _psp) internal view {
         DAO dao = DAO(payable(_c.dao));
         assertFalse(
             dao.hasPermission(_c.dao, _psp, dao.ROOT_PERMISSION_ID(), ""), "conformance: the PSP still holds ROOT"
@@ -110,7 +126,7 @@ abstract contract CrossChainDeployConformance is Test {
     }
 
     /// @dev Proves the installation was applied rather than merely prepared.
-    function assertDaoCanConfigureItsController(CrossChainDeploy.ChainCfg memory _c) internal view {
+    function assertDaoCanConfigureItsController(Deployed memory _c) internal view {
         assertTrue(
             DAO(payable(_c.dao)).hasPermission(
                 _c.controller, _c.dao, Permissions.MANAGE_CONTROLLER_CONFIG_PERMISSION_ID, ""

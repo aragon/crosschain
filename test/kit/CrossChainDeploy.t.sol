@@ -14,7 +14,7 @@ import { CrossChainControllerSetup } from "@src/CrossChainControllerSetup.sol";
 import { Executor } from "@src/Executor.sol";
 import { Permissions } from "@src/lib/Permissions.sol";
 import { ChainIds } from "@src/lib/ChainIds.sol";
-import { CrossChainDeployConformance } from "./CrossChainDeployConformance.sol";
+import { CrossChainDeployConformance, Deployed } from "./CrossChainDeployConformance.sol";
 
 /// @notice Fills the topology from values the test sets, and governs the hub
 ///         with the kit's own Multisig installer.
@@ -112,6 +112,16 @@ contract KitHarness is CrossChainDeploy {
 
     function satCfg(uint256 _i) external view returns (ChainCfg memory) {
         return satellites[_i];
+    }
+
+    /// @dev The narrow shape the conformance suite takes.
+    function hubDeployed() external view returns (Deployed memory) {
+        return Deployed(hub.dao, hub.controller, hub.executor, hub.adapter, hub.governors);
+    }
+
+    function satDeployed(uint256 _i) external view returns (Deployed memory) {
+        ChainCfg storage c = satellites[_i];
+        return Deployed(c.dao, c.controller, c.executor, c.adapter, c.governors);
     }
 
     function clearSatelliteGovernors(uint256 _i) external {
@@ -357,13 +367,13 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         _run();
 
         kit.selectHub();
-        assertConformant(kit.hubCfg(), SEP_PSP, vm.addr(DEPLOYER_KEY));
+        assertConformant(kit.hubDeployed(), SEP_PSP, vm.addr(DEPLOYER_KEY));
         assertLaneWired(
             kit.hubCfg().controller, ChainIds.BASE_SEPOLIA, kit.hubCfg().adapter, kit.satCfg(0).adapter
         );
 
         kit.selectSatellite(0);
-        assertConformant(kit.satCfg(0), BASESEP_PSP, vm.addr(DEPLOYER_KEY));
+        assertConformant(kit.satDeployed(0), BASESEP_PSP, vm.addr(DEPLOYER_KEY));
         assertLaneWired(kit.satCfg(0).controller, ChainIds.SEPOLIA, kit.satCfg(0).adapter, kit.hubCfg().adapter);
     }
 
