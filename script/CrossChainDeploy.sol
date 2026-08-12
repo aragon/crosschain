@@ -526,12 +526,35 @@ abstract contract CrossChainDeploy is Script {
         private
         returns (address)
     {
+        // CREATE2, and this is not a preference. `forge script` runs the
+        // deployer's nonce as ONE counter across every fork -- measured: chain A
+        // gets 0, 2, 6, chain B gets 1, 4, 7 -- while the broadcast replay
+        // executes each chain's transactions against that chain's OWN nonce,
+        // which starts wherever the real chain is. So a plain `new` produces an
+        // address in-script that the replay never reproduces, and the
+        // `updateConfig` that references it fails `HAS_NO_CODE` on a deployment
+        // that is otherwise correct.
+        //
+        // Only contracts the SCRIPT deploys are affected. The DAO and the
+        // controller proxy are CREATE'd by the `DAOFactory` and the PSP, whose
+        // nonces are real per-chain state and replay identically -- which is
+        // why the adapters were the only casualty.
+        //
+        // CREATE2 removes the nonce from the address entirely. The salt binds
+        // the chain and the controller, so a re-run after a failed deployment
+        // lands somewhere new rather than colliding.
+        bytes32 salt = keccak256(abi.encode(_chain.chainId, _chain.controller));
+
         if (_isTestnet(_chain.chainId)) {
             return address(
-                new TestnetCCIPAdapter(_chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted)
+                new TestnetCCIPAdapter{ salt: salt }(
+                    _chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted
+                )
             );
         }
-        return address(new CCIPAdapter(_chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted));
+        return address(
+            new CCIPAdapter{ salt: salt }(_chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted)
+        );
     }
 
     /// @dev Must match `TestnetCCIPAdapter`'s table. A chain listed here but not
