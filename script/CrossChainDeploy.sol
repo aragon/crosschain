@@ -334,6 +334,17 @@ abstract contract CrossChainDeploy is Script {
         _daoAction(_chain, abi.encodeCall(PermissionManager.grant, (_chain.dao, _who, EXECUTE_PERMISSION_ID)));
     }
 
+    /// @notice Takes `EXECUTE` back from an address a hook granted it to.
+    /// @dev The pairing matters. A helper contract that configures a DAO during
+    ///      the run — a governance factory, say — needs `EXECUTE` to act as it,
+    ///      and needs to lose it again before the handover, or the deployment
+    ///      ends with a second unconditional authority nobody accounted for.
+    ///      `_assertGovernable` would not catch that: it checks the declared
+    ///      governors CAN execute, not that nothing else can.
+    function _revokeExecute(ChainCfg storage _chain, address _who) internal {
+        _daoAction(_chain, abi.encodeCall(PermissionManager.revoke, (_chain.dao, _who, EXECUTE_PERMISSION_ID)));
+    }
+
     function _grantRoot(ChainCfg storage _chain, address _who) internal {
         _daoAction(_chain, abi.encodeCall(PermissionManager.grant, (_chain.dao, _who, ROOT_PERMISSION_ID)));
     }
