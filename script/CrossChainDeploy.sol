@@ -587,11 +587,22 @@ abstract contract CrossChainDeploy is Script {
     }
 
     /// @notice Declares an address that must be able to execute as this DAO.
-    /// @dev Plural on purpose. Real governance is often several contracts — two
-    ///      staged processors plus an emergency Safe, say — and a single-address
-    ///      check pointed at the Safe would pass while a processor's grant had
-    ///      silently failed, leaving a DAO that looks governed and cannot pass a
-    ///      proposal.
+    /// @dev Plural on purpose: real governance is often several contracts, and
+    ///      one declaration can pass while another holder's grant silently
+    ///      failed.
+    ///
+    ///      **Declare only UNCONDITIONAL holders.** OSx `GrantWithCondition`
+    ///      permissions cannot be verified generically — `hasPermission` runs
+    ///      the condition against the calldata you pass, and the kit has no idea
+    ///      what call a given governor would legitimately make, so a
+    ///      conditionally-granted address reads as unauthorised here even when
+    ///      it is correctly configured. A staged proposal processor scoped by a
+    ///      selector condition is the usual case.
+    ///
+    ///      That is a real limit, not an oversight: what this check can prove is
+    ///      that the DAO is not frozen, which needs at least one address able to
+    ///      act without qualification. Conditional grants are for the consumer's
+    ///      own tests, which know what those conditions permit.
     function _addGovernor(ChainCfg storage _chain, address _governor) internal {
         _chain.governors.push(_governor);
     }
