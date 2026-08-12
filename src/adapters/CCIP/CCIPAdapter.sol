@@ -237,6 +237,12 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
             return CCIPChainIds.KATANA;
         } else if (_chainId == ChainIds.MEGA_ETH) {
             return CCIPChainIds.MEGA_ETH;
+        } else if (_chainId == ChainIds.SEPOLIA) {
+            return CCIPChainIds.SEPOLIA;
+        } else if (_chainId == ChainIds.BASE_SEPOLIA) {
+            return CCIPChainIds.BASE_SEPOLIA;
+        } else if (_chainId == ChainIds.ARBITRUM_SEPOLIA) {
+            return CCIPChainIds.ARBITRUM_SEPOLIA;
         }
         revert Errors.UNKNOWN_CHAIN_ID(_chainId);
     }
@@ -273,6 +279,12 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
             return ChainIds.KATANA;
         } else if (_chainId == CCIPChainIds.MEGA_ETH) {
             return ChainIds.MEGA_ETH;
+        } else if (_chainId == CCIPChainIds.SEPOLIA) {
+            return ChainIds.SEPOLIA;
+        } else if (_chainId == CCIPChainIds.BASE_SEPOLIA) {
+            return ChainIds.BASE_SEPOLIA;
+        } else if (_chainId == CCIPChainIds.ARBITRUM_SEPOLIA) {
+            return ChainIds.ARBITRUM_SEPOLIA;
         }
         revert Errors.UNKNOWN_NATIVE_CHAIN_ID(_chainId);
     }

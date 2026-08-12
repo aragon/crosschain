@@ -35,18 +35,25 @@ abstract contract CCIPAdapterBase is Test, ICrossChainControllerEvents {
     uint64 internal constant SEL_ETH_MAINNET = 5009297550715157269;
     uint64 internal constant SEL_BASE = 15971525489660198786;
     uint64 internal constant SEL_ARBITRUM_ONE = 4949039107694359620;
-    // A real CCIP selector the adapter does NOT map (Sepolia is intentionally
-    // absent from the production map), used to exercise the unmapped path.
     uint64 internal constant SEL_SEPOLIA = 16015286601757825753;
+    uint64 internal constant SEL_BASE_SEPOLIA = 10344971235874465080;
+    uint64 internal constant SEL_ARBITRUM_SEPOLIA = 3478487238524512106;
 
     // Standard chain ids come from `ChainIds` (src/common/crosschain/lib).
     uint256 internal constant CHAIN_ETH_MAINNET = ChainIds.ETHEREUM;
     uint256 internal constant CHAIN_BASE = ChainIds.BASE;
     uint256 internal constant CHAIN_ARBITRUM_ONE = ChainIds.ARBITRUM_ONE;
-    // Sepolia's chain id: a real chain the adapter does NOT map, used to
-    // exercise the unmapped path. Deliberately not a low integer, so growing
-    // the production map can never silently turn this into a mapped chain.
-    uint256 internal constant CHAIN_SEPOLIA = 11155111;
+    uint256 internal constant CHAIN_SEPOLIA = ChainIds.SEPOLIA;
+    uint256 internal constant CHAIN_BASE_SEPOLIA = ChainIds.BASE_SEPOLIA;
+    uint256 internal constant CHAIN_ARBITRUM_SEPOLIA = ChainIds.ARBITRUM_SEPOLIA;
+
+    // Synthetic, for the unmapped paths. Sepolia used to serve this role,
+    // picked so that "growing the production map can never silently turn this
+    // into a mapped chain" -- which is precisely what adding the testnets did.
+    // Neither of these is a chain or a CCIP selector, so they cannot be
+    // overtaken the same way.
+    uint256 internal constant CHAIN_UNMAPPED = 424_242_424_242;
+    uint64 internal constant SEL_UNMAPPED = 1;
 
     // Events come from `ICrossChainControllerEvents` (inherited), so
     // `vm.expectEmit` can `emit` them without a local redeclaration.
