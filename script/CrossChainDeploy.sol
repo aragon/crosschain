@@ -369,8 +369,40 @@ abstract contract CrossChainDeploy is Script {
     ///      Empty subdomain: the repo is addressed directly, so no ENS
     ///      registration is needed. Must be called inside an active broadcast.
     function _publishRepo(ChainCfg storage _chain, address _setup) internal returns (PluginRepo) {
+        return _publishRepo(_chain, _setup, bytes("kit"), bytes("kit"));
+    }
+
+    /// @notice As above, with real metadata URIs.
+    /// @dev Build metadata is write-once — `PluginRepo` offers
+    ///      `updateReleaseMetadata` and no build equivalent — so a placeholder
+    ///      here is permanent for release 1 build 1, and the Aragon App and
+    ///      subgraph cannot render a plugin whose build URI does not resolve.
+    ///      Recoverable only by publishing a second build.
+    ///
+    ///      The maintainer is the DAO, not the deploying account, and that is the
+    ///      part worth reading twice. `PluginRepoFactory` grants the maintainer
+    ///      `ROOT`, `MAINTAINER` and `UPGRADE_REPO` on the new repo and revokes
+    ///      only its own — none of which the handover touches, because the
+    ///      handover is about `EXECUTE` on the DAO. An EOA maintainer therefore
+    ///      keeps permanent authority over a repo the DAO will later install
+    ///      from: it can publish a malicious build, or replace the repo
+    ///      implementation outright via `UPGRADE_REPO`, and `applyInstallation`
+    ///      would apply whatever permission set that build returns while the PSP
+    ///      holds `ROOT`. Pinning a tag does not help. Nothing in the run needs
+    ///      the EOA to hold it — `createPluginRepoWithFirstVersion` publishes
+    ///      build 1 itself — so the DAO takes it from the start.
+    function _publishRepo(
+        ChainCfg storage _chain,
+        address _setup,
+        bytes memory _releaseMetadata,
+        bytes memory _buildMetadata
+    )
+        internal
+        returns (PluginRepo)
+    {
+        require(_chain.dao != address(0), "publish a repo after the DAOs exist: the DAO is the maintainer");
         return PluginRepoFactory(_chain.pluginRepoFactory)
-            .createPluginRepoWithFirstVersion("", _setup, _resolveDeployer(), bytes("kit"), bytes("kit"));
+            .createPluginRepoWithFirstVersion("", _setup, _chain.dao, _releaseMetadata, _buildMetadata);
     }
 
     /// @notice Grants `EXECUTE` on this chain's DAO, executed AS the DAO.
