@@ -990,8 +990,17 @@ abstract contract CrossChainDeploy is Script {
     ///      both `retryMessage` and `cancelMessage`.
     uint256 internal minFailedMessageGas = 45_000;
 
-    /// @dev The run's only output. Capture it — the kit writes no files.
-    function _report() internal {
+    /// @dev The run's only output. Capture it — the kit itself writes no files.
+    ///
+    ///      Virtual because a consumer whose existing tooling reads an address
+    ///      book has to get one from somewhere, and after every phase has
+    ///      succeeded is the only honest moment to write it. The kit stays
+    ///      file-free by default; override, call `super._report()`, and persist
+    ///      whatever the verifiers need. Guard that write with
+    ///      `vm.isContext(VmSafe.ForgeContext.ScriptDryRun)` — a dry run reaches
+    ///      here too, and would otherwise overwrite the record of the live
+    ///      deployment with addresses that were never broadcast.
+    function _report() internal virtual {
         console.log("================ DEPLOYMENT COMPLETE ================");
         _reportChain("hub", hub);
         for (uint256 i = 0; i < satellites.length; i++) {
