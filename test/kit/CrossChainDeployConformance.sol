@@ -41,14 +41,33 @@ struct Deployed {
 ///      veto that never arrives, a DAO nobody notices is frozen until they need
 ///      to repair it.
 ///
-///      Usage: inherit, and call `assertConformant` with each chain's config
-///      while standing on that chain's fork.
+///      Usage: inherit, and call `assertSatelliteConformant` /
+///      `assertHubConformant` with each chain's config while standing on that
+///      chain's fork.
 abstract contract CrossChainDeployConformance is Test {
-    /// @notice Every property, for one chain. Call while that chain is selected.
-    function assertConformant(Deployed memory _c, address _psp, address _deployer) internal view {
+    /// @notice Every property the kit guarantees on a DAO it CREATED. Call
+    ///         while that chain is selected.
+    function assertSatelliteConformant(Deployed memory _c, address _psp, address _deployer) internal view {
         assertArtefactsExist(_c);
         assertNoEoaCanExecute(_c, _deployer);
         assertGovernorsCanExecute(_c);
+        assertControllerHoldsNothingOnItsDao(_c);
+        assertDedicatedExecutor(_c);
+        assertPspReturnedRoot(_c, _psp);
+        assertDaoCanConfigureItsController(_c);
+    }
+
+    /// @notice What the kit guarantees on the hub, whose DAO it did NOT create:
+    ///         the controller really installed, with a dedicated executor,
+    ///         holding nothing on the DAO, and the PSP's ROOT returned.
+    /// @dev Deliberately NO deployer-revoked and NO governability assertion.
+    ///      Hub governance and the hub handover are the consumer's — the kit
+    ///      cannot know when (or whether) `_handOverHub()` was called, so
+    ///      asserting either here would certify a promise the kit never made.
+    ///      Assert those in the consumer's own suite, after its handover; the
+    ///      hub's lanes are per-satellite, so pair this with `assertLaneWired`.
+    function assertHubConformant(Deployed memory _c, address _psp) internal view {
+        assertArtefactsExist(_c);
         assertControllerHoldsNothingOnItsDao(_c);
         assertDedicatedExecutor(_c);
         assertPspReturnedRoot(_c, _psp);

@@ -4,14 +4,11 @@ Stands up a fresh OSx DAO with the cross-chain controller on one hub chain and N
 satellite chains, in a single run. It will not finish a deployment that leaves a
 DAO nobody can act as.
 
-## The common case: no Solidity
+## The config
 
-A DAO governed by a multisig on every chain needs a config file and nothing else.
-
-```bash
-DEPLOY_CONFIG=deploy/my-dao.json \
-  forge script StandardDeploy --broadcast --account <keystore>
-```
+There is no zero-code entry point any more — the hub DAO is yours to create, so
+there is always a script to write (see below). The kit's own JSON loader,
+`_loadTopologyFromJson`, is still offered for the topology:
 
 ```jsonc
 {

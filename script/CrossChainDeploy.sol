@@ -555,8 +555,7 @@ abstract contract CrossChainDeploy is Script {
             .prepareInstallation(
                 _chain.dao,
                 PluginSetupProcessor.PrepareInstallationParams({
-                    pluginSetupRef: PluginSetupRef({ versionTag: version.tag, pluginSetupRepo: repo }),
-                    data: data
+                    pluginSetupRef: PluginSetupRef({ versionTag: version.tag, pluginSetupRepo: repo }), data: data
                 })
             );
         vm.stopBroadcast();
@@ -861,17 +860,6 @@ abstract contract CrossChainDeploy is Script {
     // Phase 5 — governance
     // -------------------------------------------------------------------------
 
-    /// @notice Install whatever governs the hub DAO.
-    /// @dev Runs LAST, after the cross-chain stack is complete, with the
-    ///      deployer still holding `EXECUTE` on every DAO. So it can install
-    ///      plugins, grant permissions, seed a treasury — anything — and it sees
-    ///      final controller, executor and adapter addresses.
-    ///
-    ///      MUST declare at least one governor via {_addGovernor}. The kit
-    ///      verifies them and refuses to hand over otherwise; that check is not
-    ///      overridable.
-    function _configureHub() internal virtual;
-
     /// @notice Install whatever governs satellite `_i`.
     /// @dev Defaults to a Multisig from `multisigRepo`. Overridable — the
     ///      postcondition is what protects the deployment, so a project with its
@@ -1033,6 +1021,23 @@ abstract contract CrossChainDeploy is Script {
         for (uint256 i = 0; i < satellites.length; i++) {
             _revokeDeployer(satellites[i]);
         }
+    }
+
+    /// @notice Revokes the deployer's `EXECUTE` on the hub DAO — after proving
+    ///         the governance that outlives it can act. The consumer's LAST
+    ///         call, once its hub governance is installed and declared.
+    /// @dev Opt-in, and the kit never calls it: hub governance left the kit,
+    ///      and only the consumer knows when that work is done. It exists
+    ///      because the alternative is each consumer revoking bare-handed on
+    ///      the most important chain — without the governability check
+    ///      {_revokeDeployer} runs immediately before every satellite revoke —
+    ///      which is exactly how a DAO ends frozen with
+    ///      `MANAGE_CONTROLLER_CONFIG`, `CANCEL_MESSAGE`, `PAUSE`, `UNPAUSE`
+    ///      and `UPGRADE_PLUGIN` permanently stranded on it. Declare the hub's
+    ///      governance with {_addGovernor} first; an undeclared hub refuses
+    ///      here rather than freezing.
+    function _handOverHub() internal {
+        _revokeDeployer(hub);
     }
 
     function _revokeDeployer(ChainCfg storage _chain) private {

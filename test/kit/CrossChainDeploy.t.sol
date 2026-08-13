@@ -82,12 +82,6 @@ contract KitHarness is CrossChainDeploy {
         }
     }
 
-    /// @dev A real consumer installs its own governance here. This uses the
-    ///      kit's Multisig installer, which is also the satellite default.
-    function _configureHub() internal override {
-        _installMultisigGovernance(hub);
-    }
-
     // --- exposed for the tests ---
 
     function createForks() external {
@@ -118,6 +112,11 @@ contract KitHarness is CrossChainDeploy {
     function installHubGovernance() external {
         _select(hub);
         _installMultisigGovernance(hub);
+    }
+
+    /// @dev The consumer's last call, once its governance is in.
+    function handOverHub() external {
+        _handOverHub();
     }
 
     function selectHub() external {
@@ -309,10 +308,12 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         return address(repo);
     }
 
-    /// @dev The whole consumer sequence, through the kit's two entry points.
+    /// @dev The whole consumer sequence, through the kit's two entry points,
+    ///      ending with the consumer's own hub handover.
     function _run() internal {
         _runThroughInstall();
         kit.installHubGovernance();
+        kit.handOverHub();
     }
 
     /// @dev Up to and including `installCrosschain()` — the point where the kit
@@ -363,14 +364,17 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         assertGt(_c.adapter.code.length, 0, "adapter");
     }
 
-    /// @notice **The invariant the kit exists for**, on the DAOs the kit
-    ///         creates: after a complete run no EOA can act as any satellite,
-    ///         and every declared governor still can. The hub is deliberately
-    ///         different — see
+    /// @notice **The invariant the kit exists for.** After the complete
+    ///         consumer sequence — the kit's satellite handover plus the
+    ///         consumer's own `_handOverHub()` — no EOA can act as any DAO,
+    ///         and every declared governor still can. Mid-sequence the hub is
+    ///         deliberately different — see
     ///         {test_installLeavesTheDeployersExecuteOnTheHub}.
-    function test_fullRun_handsEverySatelliteToItsGovernance() public {
+    function test_fullRun_handsEveryDaoToItsGovernance() public {
         _run();
 
+        kit.selectHub();
+        _assertHandedOver(kit.hubCfg());
         kit.selectSatellite(0);
         _assertHandedOver(kit.satCfg(0));
     }
@@ -469,25 +473,18 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
 
     /// @notice The shared conformance suite, run against this deployment. A
     ///         consumer inherits the same contract and points it at its own.
-    /// @dev The hub is asserted piecewise, without the deployer-revoked check:
-    ///      the kit revokes nothing on the hub — the consumer does, after its
-    ///      own governance is in. The next commit gives this shape a name,
-    ///      `assertHubConformant`.
+    /// @dev The hub's conformance is narrower by design: no deployer-revoked,
+    ///      no governability — those are the consumer's promises now, asserted
+    ///      here through `_assertHandedOver` in the handover test instead.
     function test_fullRun_isConformant() public {
         _run();
 
         kit.selectHub();
-        Deployed memory h = kit.hubDeployed();
-        assertArtefactsExist(h);
-        assertGovernorsCanExecute(h);
-        assertControllerHoldsNothingOnItsDao(h);
-        assertDedicatedExecutor(h);
-        assertPspReturnedRoot(h, SEP_PSP);
-        assertDaoCanConfigureItsController(h);
+        assertHubConformant(kit.hubDeployed(), SEP_PSP);
         assertLaneWired(kit.hubCfg().controller, BASE_SEPOLIA, kit.hubCfg().adapter, kit.satCfg(0).adapter);
 
         kit.selectSatellite(0);
-        assertConformant(kit.satDeployed(0), BASESEP_PSP, vm.addr(DEPLOYER_KEY));
+        assertSatelliteConformant(kit.satDeployed(0), BASESEP_PSP, vm.addr(DEPLOYER_KEY));
         assertLaneWired(kit.satCfg(0).controller, SEPOLIA, kit.satCfg(0).adapter, kit.hubCfg().adapter);
     }
 
@@ -581,9 +578,7 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         kit.initCrosschain(DEPLOYER_KEY);
         kit.setHubDao(address(0xDEAD));
 
-        vm.expectRevert(
-            bytes("hub.dao has no code on the hub chain: it was created on another fork, or not at all")
-        );
+        vm.expectRevert(bytes("hub.dao has no code on the hub chain: it was created on another fork, or not at all"));
         kit.setUpCrosschain();
     }
 
@@ -604,9 +599,7 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         kit.initCrosschain(DEPLOYER_KEY);
         kit.createHubDao();
 
-        vm.expectRevert(
-            bytes("call setUpCrosschain first: installCrosschain only applies the install it prepared")
-        );
+        vm.expectRevert(bytes("call setUpCrosschain first: installCrosschain only applies the install it prepared"));
         kit.installCrosschain();
     }
 
@@ -681,6 +674,17 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
             dao.hasPermission(address(dao), vm.addr(DEPLOYER_KEY), dao.EXECUTE_PERMISSION_ID(), ""),
             "the deployer's EXECUTE on the hub is the consumer's working authority; the kit must not take it"
         );
+    }
+
+    /// @notice `_handOverHub()` must refuse an ungoverned hub, exactly as the
+    ///         satellite handover would — otherwise every consumer revokes
+    ///         bare-handed on the most important chain, and one forgotten
+    ///         `_addGovernor` freezes the DAO that holds every repair lever.
+    function test_handOverHubRefusesAnUngovernedHub() public {
+        _runThroughInstall();
+
+        vm.expectRevert(bytes("DAO has no governor: nothing could act as it after handover"));
+        kit.handOverHub();
     }
 
     /// @notice `address(0)` is not a governor.

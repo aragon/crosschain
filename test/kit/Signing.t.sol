@@ -21,7 +21,6 @@ contract Echo {
 
 contract SigningProbe is CrossChainDeploy {
     function _loadTopology() internal override { }
-    function _configureHub() internal override { }
 
     /// @dev The production path: no key, so forge's resolved sender signs.
     function probeForgeResolved() external {
