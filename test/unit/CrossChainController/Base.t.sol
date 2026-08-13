@@ -246,7 +246,7 @@ abstract contract CrossChainControllerBase is Test, ICrossChainControllerEvents 
         assertEq(uint256(vm.load(address(controller), bytes32(NONCE_SLOT))), nonceBefore + 1, "NONCE_SLOT stale");
 
         // `_transactions[txId]` -- set to `Executed` by the delivery above.
-        // `state` and `bridgedAt` share the word: `state` is byte 0, so mask it
+        // `state` share the word: `state` is byte 0, so mask it
         // off the packed value rather than comparing the whole word.
         bytes memory encodedTx = _encodedEmptyTx(1, CHAIN_ID);
         vm.prank(address(adapterA));
@@ -254,7 +254,7 @@ abstract contract CrossChainControllerBase is Test, ICrossChainControllerEvents 
         bytes32 txId = TransactionLib.id(encodedTx);
         assertEq(
             uint256(vm.load(address(controller), keccak256(abi.encode(txId, TRANSACTION_STATE_SLOT)))) & 0xff,
-            uint256(controller.getTransaction(txId).state),
+            uint256(controller.getTransactionState(txId)),
             "TRANSACTION_STATE_SLOT stale"
         );
     }

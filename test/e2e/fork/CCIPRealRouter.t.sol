@@ -421,6 +421,7 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
 
             uint64 selector;
             try origin.adapter.toNativeChainId(chainId) returns (uint256 nativeChainId) {
+                // forge-lint: disable-next-line(unsafe-typecast)
                 selector = uint64(nativeChainId);
             } catch {
                 // Not in the table; nothing to check.

@@ -55,7 +55,7 @@ chain. See [Same Chain Delivery](./specs/SPEC.md#same-chain-delivery).
 | [`BaseAdapter`](./src/adapters/BaseAdapter.sol) | Shared adapter logic: controller binding, trusted remotes, execution-context checks. |
 | [`CCIPAdapter`](./src/adapters/CCIP/CCIPAdapter.sol) | Chainlink CCIP transport. |
 | [`IBaseAdapter`](./src/adapters/IBaseAdapter.sol) | The interface every transport must satisfy. |
-| [`Transaction`](./src/lib/Transaction.sol) | The message envelope and its state record. |
+| [`Transaction`](./src/lib/Transaction.sol) | The message envelope and its lifecycle state. |
 
 ## Usage
 

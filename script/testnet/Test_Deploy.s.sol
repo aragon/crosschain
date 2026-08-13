@@ -7,7 +7,6 @@ import { console } from "forge-std/console.sol";
 
 import { CrossChainController } from "@src/CrossChainController.sol";
 import { ICrossChainController } from "@src/ICrossChainController.sol";
-import { TransactionRecord } from "@src/lib/Transaction.sol";
 import { Executor } from "@src/Executor.sol";
 import { BaseAdapter } from "@src/adapters/BaseAdapter.sol";
 import { Permissions } from "@src/lib/Permissions.sol";
@@ -308,15 +307,12 @@ contract Test_Deploy is Script {
         CrossChainController controller = CrossChainController(payable(vm.envAddress("DEST_CONTROLLER")));
         bytes32 txId = vm.envBytes32("TX_ID");
 
-        TransactionRecord memory record = controller.getTransaction(txId);
-
         console.log("chain    ", block.chainid);
-        console.log("state    ", uint256(record.state));
+        console.log("state    ", uint256(controller.getTransactionState(txId)));
         console.log("  0 = None      -> nothing recorded; only CCIP manual execution can recover it");
         console.log("  1 = Delivered -> recorded; retryMessage/cancelMessage available locally");
         console.log("  2 = Executed  -> ran to completion");
         console.log("  3 = Cancelled");
-        console.log("bridgedAt", uint256(record.bridgedAt));
 
         address target = vm.envOr("DEST_TARGET", address(0));
         if (target != address(0)) {
