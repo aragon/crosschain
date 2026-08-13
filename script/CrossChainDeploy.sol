@@ -11,6 +11,7 @@ import { PluginRepoFactory } from "@aragon/osx/framework/plugin/repo/PluginRepoF
 import { PluginSetupProcessor } from "@aragon/osx/framework/plugin/setup/PluginSetupProcessor.sol";
 import { PluginSetupRef, hashHelpers } from "@aragon/osx/framework/plugin/setup/PluginSetupProcessorHelpers.sol";
 import { PermissionManager } from "@aragon/osx/core/permission/PermissionManager.sol";
+import { PermissionLib } from "@aragon/osx-commons-contracts/src/permission/PermissionLib.sol";
 import { IPluginSetup } from "@aragon/osx-commons-contracts/src/plugin/setup/IPluginSetup.sol";
 import { IExecutor, Action } from "@aragon/osx-commons-contracts/src/executors/IExecutor.sol";
 
@@ -23,13 +24,24 @@ import { IBaseAdapter } from "../src/adapters/IBaseAdapter.sol";
 import { TestnetCCIPAdapter } from "./testnet/TestnetCCIPAdapter.sol";
 
 /// @title CrossChainDeploy
-/// @notice Deploys a fresh DAO with the cross-chain controller on one hub chain
-///         and N satellite chains, in a single run.
-/// @dev **What a consumer supplies.** Two things: where the config comes from
-///      (`_loadTopology`) and what governs each DAO (`_configureHub` /
-///      `_configureSatellite`, added in a later task). Everything else — forks,
-///      DAOs, controllers, adapters, routing, and the handover — is this
-///      contract's, and is not overridable.
+/// @notice Gives a consumer-owned hub DAO the whole cross-chain stack — the
+///         controller on the hub and on N satellite chains, satellite DAOs, the
+///         adapters and the routing — in two calls.
+/// @dev **The consumer sequence.** `initCrosschain()` resolves the signer,
+///      loads the topology and creates the forks, leaving the HUB fork
+///      selected; the consumer then creates its own DAO there and, still
+///      holding `EXECUTE` on it, calls `setUpCrosschain()` followed by
+///      `installCrosschain()`. The split exists because satellite adapters
+///      bake the hub controller in at construction: the first call prepares
+///      the hub controller (permissionless, so the address is known) and
+///      builds every satellite end to end; the second applies that prepared
+///      install onto the hub DAO and wires the hub's lanes.
+///
+///      **What a consumer supplies.** Where the config comes from
+///      (`_loadTopology`), the hub DAO itself, and what governs it. Satellite
+///      governance defaults to a Multisig (`_configureSatellite`). Everything
+///      else — forks, satellite DAOs, controllers, adapters, routing, and the
+///      satellite handover — is this contract's, and is not overridable.
 ///
 ///      **The rule the seam is built on:** a hook may choose HOW something is
 ///      done; it may never choose WHETHER a safety property holds. Anything
@@ -463,31 +475,64 @@ abstract contract CrossChainDeploy is Script {
     /// @notice The build resolved on the hub, then required on every satellite.
     uint16 internal pinnedBuild;
 
-    /// @notice Installs the controller on every chain.
-    /// @dev One sweep, and it must finish everywhere before phase 4 starts on
-    ///      any chain: an adapter takes its trusted remote — the controller on
-    ///      the OTHER side — in the constructor and has no setter.
-    function _installControllers(uint256 _minFailedMessageGas) internal {
-        require(_minFailedMessageGas > 0, "minFailedMessageGas of 0 disables the failure-record reserve");
+    /// @notice What must survive between a controller's prepare and its apply.
+    /// @dev `applyInstallation` recomputes the setup id from the caller-supplied
+    ///      permissions, helpers hash and version tag, so those are stored here
+    ///      verbatim; the plugin itself is in `ChainCfg.controller`. Keyed by
+    ///      chain id because the hub's entry has to survive every satellite's
+    ///      prepare/apply in between.
+    ///
+    ///      The permissions land element-wise, never by whole-array assignment:
+    ///      copying a `MultiTargetPermission[] memory` into storage is solc
+    ///      error 1834 in the legacy pipeline, and this project does not compile
+    ///      with `via_ir`. The struct is static, so `push` works.
+    struct PendingController {
+        PluginRepo repo;
+        PluginRepo.Tag tag;
+        bytes32 helpersHash;
+        PermissionLib.MultiTargetPermission[] permissions;
+    }
 
-        _installController(hub, _minFailedMessageGas);
+    mapping(uint256 => PendingController) private pendingControllers;
+
+    /// @notice Installs the controller on every satellite.
+    /// @dev One sweep, and it must finish everywhere before the adapters exist
+    ///      on any chain: an adapter takes its trusted remote — the controller
+    ///      on the OTHER side — in the constructor and has no setter. The hub is
+    ///      absent: its controller was prepared by `setUpCrosschain()` before
+    ///      this ran, and is applied by `installCrosschain()`.
+    function _installControllers() internal {
         for (uint256 i = 0; i < satellites.length; i++) {
-            _installController(satellites[i], _minFailedMessageGas);
+            _prepareController(satellites[i]);
+            _applyController(satellites[i]);
         }
     }
 
-    function _installController(ChainCfg storage _chain, uint256 _minFailedMessageGas) private {
+    /// @notice Deploys a chain's controller proxy and dedicated `Executor`, and
+    ///         stores everything its `applyInstallation` will need.
+    /// @dev `PSP.prepareInstallation` has no auth modifier, which is what makes
+    ///      the two-call model possible at all: the hub controller's address is
+    ///      known — and bakeable into satellite adapters — before anything has
+    ///      acted as the hub DAO.
+    function _prepareController(ChainCfg storage _chain) internal returns (address plugin) {
+        // Checked at prepare, not at apply: the value is baked into the proxy's
+        // `initialize` here, so a later check would be reading a decision
+        // already taken. Zero lets an out-of-gas payload revert the whole
+        // delivery, recording nothing — the message is then unreachable by both
+        // `retryMessage` and `cancelMessage`.
+        require(minFailedMessageGas > 0, "minFailedMessageGas of 0 disables the failure-record reserve");
+
         _select(_chain);
 
         PluginRepo repo = PluginRepo(_chain.crossChainRepo);
         _requireInstallableRepo(repo);
 
-        // Resolved as "latest" on the HUB only, then that exact build is demanded
-        // everywhere else. Each chain has its own repo with its own publishing
-        // history, so asking each for "latest" independently puts different
-        // builds on the two ends of a lane whenever one chain is ahead — or
-        // whenever a build lands mid-run, which is a slow sweep across several
-        // chains. A satellite whose repo lacks the build reverts here.
+        // Resolved as "latest" on the HUB only — always the first chain through
+        // here, prepared before any satellite — then that exact build is
+        // demanded everywhere else. Each chain has its own repo with its own
+        // publishing history, so asking each for "latest" independently puts
+        // different builds on the two ends of a lane whenever one chain is
+        // ahead. A satellite whose repo lacks the build reverts here.
         PluginRepo.Version memory version;
         if (pinnedBuild == 0) {
             version = repo.getLatestVersion(CROSS_CHAIN_RELEASE);
@@ -502,18 +547,74 @@ abstract contract CrossChainDeploy is Script {
         // can freeze every message on the chain, never receives `UNPAUSE`, and
         // is not revoked by an uninstall.
         bytes memory data = CrossChainControllerSetup(version.pluginSetup)
-            .encodeInstallationParameters(DEDICATED_EXECUTOR, _chain.dao, _minFailedMessageGas);
+            .encodeInstallationParameters(DEDICATED_EXECUTOR, _chain.dao, minFailedMessageGas);
 
         _broadcast();
-        (address plugin, address[] memory helpers) = _installPlugin(_chain, repo, version.tag, data);
+        IPluginSetup.PreparedSetupData memory prepared;
+        (plugin, prepared) = PluginSetupProcessor(_chain.psp)
+            .prepareInstallation(
+                _chain.dao,
+                PluginSetupProcessor.PrepareInstallationParams({
+                    pluginSetupRef: PluginSetupRef({ versionTag: version.tag, pluginSetupRepo: repo }),
+                    data: data
+                })
+            );
         vm.stopBroadcast();
 
-        require(helpers.length == 1, "unexpected helper count from CrossChainControllerSetup");
+        require(prepared.helpers.length == 1, "unexpected helper count from CrossChainControllerSetup");
         _chain.controller = plugin;
-        _chain.executor = helpers[0];
+        _chain.executor = prepared.helpers[0];
 
-        console.log("[3] controller", plugin);
-        console.log("    executor (owner = controller)", helpers[0]);
+        PendingController storage pending = pendingControllers[_chain.chainId];
+        delete pendingControllers[_chain.chainId];
+        pending.repo = repo;
+        pending.tag = version.tag;
+        pending.helpersHash = hashHelpers(prepared.helpers);
+        for (uint256 i = 0; i < prepared.permissions.length; i++) {
+            pending.permissions.push(prepared.permissions[i]);
+        }
+
+        console.log("[3] controller prepared", plugin);
+        console.log("    executor (owner = controller)", prepared.helpers[0]);
+    }
+
+    /// @notice Applies a prepared controller install onto its DAO.
+    /// @dev Three actions, executed AS the DAO: grant the PSP `ROOT`, apply,
+    ///      revoke it again. `PluginSetupProcessor._canApply` short-circuits on
+    ///      `msg.sender == _dao`, so no `APPLY_INSTALLATION_PERMISSION` grant is
+    ///      needed, and the PSP holds `ROOT` for one transaction and not a block
+    ///      longer. `allowFailureMap` is zero, so a failed apply reverts the
+    ///      whole `DAO.execute` and the pending prepare survives on chain — the
+    ///      same apply can be re-sent.
+    function _applyController(ChainCfg storage _chain) internal {
+        _select(_chain);
+
+        PendingController storage pending = pendingControllers[_chain.chainId];
+
+        Action[] memory actions = new Action[](3);
+        actions[0].to = _chain.dao;
+        actions[0].data = abi.encodeCall(PermissionManager.grant, (_chain.dao, _chain.psp, ROOT_PERMISSION_ID));
+        actions[1].to = _chain.psp;
+        actions[1].data = abi.encodeCall(
+            PluginSetupProcessor.applyInstallation,
+            (
+                _chain.dao,
+                PluginSetupProcessor.ApplyInstallationParams({
+                    pluginSetupRef: PluginSetupRef({ versionTag: pending.tag, pluginSetupRepo: pending.repo }),
+                    plugin: _chain.controller,
+                    permissions: pending.permissions,
+                    helpersHash: pending.helpersHash
+                })
+            )
+        );
+        actions[2].to = _chain.dao;
+        actions[2].data = abi.encodeCall(PermissionManager.revoke, (_chain.dao, _chain.psp, ROOT_PERMISSION_ID));
+
+        _broadcast();
+        IExecutor(_chain.dao).execute(bytes32(0), actions, 0);
+        vm.stopBroadcast();
+
+        console.log("[3] controller installed on", _chain.chainId);
     }
 
     /// @dev The repo address is an input, so a wrong one is a config error worth
@@ -531,17 +632,23 @@ abstract contract CrossChainDeploy is Script {
     // Phase 4 — adapters and routing
     // -------------------------------------------------------------------------
 
-    /// @notice Deploys every adapter, then wires every lane.
+    /// @notice Deploys every adapter, then wires every satellite lane.
     /// @dev Hub-and-spoke: the hub adapter trusts every satellite controller,
     ///      and each satellite adapter trusts only the hub. Satellites never
     ///      talk to each other.
+    ///
+    ///      The hub's own routing is deliberately absent. `updateConfig` is a
+    ///      DAO action gated by `MANAGE_CONTROLLER_CONFIG`, which the hub DAO
+    ///      only receives when `installCrosschain()` applies the prepared
+    ///      install — so `_routeHub` runs there, right after the apply.
+    ///      `_assertLanesWired` reads only adapter constructor state and needs
+    ///      no hub permission, so it runs in full here.
     function _deployAdaptersAndRoute() internal {
         _deployHubAdapter();
         for (uint256 i = 0; i < satellites.length; i++) {
             _deploySatelliteAdapter(i);
         }
 
-        _routeHub();
         for (uint256 i = 0; i < satellites.length; i++) {
             _routeSatellite(i);
         }
@@ -878,10 +985,6 @@ abstract contract CrossChainDeploy is Script {
     }
 
     function _configureGovernance() internal {
-        _select(hub);
-        _configureHub();
-        _assertGovernable(hub);
-
         for (uint256 i = 0; i < satellites.length; i++) {
             _select(satellites[i]);
             _configureSatellite(i);
@@ -911,7 +1014,7 @@ abstract contract CrossChainDeploy is Script {
     // Phase 6 — handover
     // -------------------------------------------------------------------------
 
-    /// @notice Takes `EXECUTE` away from the deployer on every chain.
+    /// @notice Takes `EXECUTE` away from the deployer on every satellite.
     /// @dev MUST be last: every phase above is authorised by this permission.
     ///      Irreversible, so the governability check runs once more immediately
     ///      before it rather than being trusted from phase 5.
@@ -920,8 +1023,13 @@ abstract contract CrossChainDeploy is Script {
     ///      DAO holds `ROOT` on itself, so this is the deployer's last act with
     ///      the authority it is giving up. A failed transaction leaves the
     ///      permission in place and can be retried.
+    ///
+    ///      The hub is deliberately absent: the deployer's `EXECUTE` there is
+    ///      the consumer's working authority for everything that follows the
+    ///      install — its own governance, grants against final addresses — and
+    ///      only the consumer knows when that work is done. The kit revokes
+    ///      nothing on the hub.
     function _handOver() internal {
-        _revokeDeployer(hub);
         for (uint256 i = 0; i < satellites.length; i++) {
             _revokeDeployer(satellites[i]);
         }
@@ -938,48 +1046,142 @@ abstract contract CrossChainDeploy is Script {
     }
 
     // -------------------------------------------------------------------------
-    // Entry point
+    // Entry points
     // -------------------------------------------------------------------------
 
-    /// @notice Entry point. Accepts either signing path.
-    /// @dev Three ways in, in precedence order:
+    /// @notice Step one of three: resolve the signer, load the topology, create
+    ///         the forks, and leave the HUB fork selected.
+    /// @dev The consumer sequence is
+    ///        `initCrosschain → create the hub DAO → setUpCrosschain →
+    ///         installCrosschain → hub governance → hand over`,
+    ///      and the hub DAO must be created on the fork this call leaves
+    ///      selected — a DAO on any other fork is a DAO on the wrong chain,
+    ///      which `setUpCrosschain()`'s preconditions reject as codeless.
     ///
-    ///        1. `PRIVATE_KEY` in the environment — read here.
-    ///        2. forge's own `--account <keystore>` / `--ledger` — used when
-    ///           `PRIVATE_KEY` is unset, because `vm.startBroadcast()` with no
-    ///           argument signs with whatever forge resolved.
-    ///        3. `--private-key 0x…` on the command line — also (2); forge
-    ///           resolves it and the kit never sees the value.
-    ///
-    ///      A keystore or a hardware wallet is the better habit: a plaintext key
-    ///      in the environment is readable by anything running as you, and
-    ///      leaves no record of which key signed a deployment. But CI usually
-    ///      has a secret and not a keystore, and refusing that just pushes
-    ///      people to `--private-key` on the command line, where the key is
-    ///      visible in `ps` to every user on the box. So both are accepted.
+    ///      `_deployerKey` accepts either signing path. Pass
+    ///      `vm.envOr("PRIVATE_KEY", uint256(0))` from your `run()`: a non-zero
+    ///      value broadcasts with that key, zero defers to whatever forge's own
+    ///      `--account` / `--ledger` / `--private-key` resolved. A keystore or a
+    ///      hardware wallet is the better habit — a plaintext key in the
+    ///      environment is readable by anything running as you, and leaves no
+    ///      record of which key signed — but CI usually has a secret and not a
+    ///      keystore, and refusing that just pushes people to `--private-key`
+    ///      on the command line, where the key is visible in `ps`.
     ///
     ///      The precedence is the sharp edge: a stale `PRIVATE_KEY` left in a
     ///      shell silently wins over `--account`. The kit cannot detect which
     ///      flags forge was given, so it prints the resolved signer and its
     ///      source before anything is broadcast — see {_reportSigner}.
-    function run() public {
-        runWith(vm.envOr("PRIVATE_KEY", uint256(0)));
-    }
-
-    /// @notice The whole deployment, in order.
-    /// @dev The order is the specification. Controllers are one sweep because an
-    ///      adapter needs the controller on the other side; adapters precede
-    ///      routing for the same reason one step further out; governance is last
-    ///      but one because nothing earlier needs it; the handover is last
-    ///      because it removes the authority every phase above used.
-    function runWith(uint256 _deployerKey) public {
+    function initCrosschain(uint256 _deployerKey) public {
         deployerKey = _deployerKey;
         deployer = _resolveDeployer();
         _reportSigner();
 
         _loadTopology();
         _createForks();
-        phases();
+        _select(hub);
+    }
+
+    /// @notice Step two: everything that does not need to act as the hub DAO.
+    ///         Prepares the hub controller, then builds every satellite end to
+    ///         end — DAO, controller, adapter, routing, governance, handover —
+    ///         and deploys and cross-checks the hub adapter.
+    /// @dev The preconditions run HERE, not only at install. This call hands
+    ///      satellites over to their governance and burns ENS subdomains, which
+    ///      are claimed once per registrar and never released — validating the
+    ///      hub only at install would mean discovering a typo'd `hub.dao` after
+    ///      the satellites are already unrecoverable.
+    ///
+    ///      Exits standing on a satellite fork; `installCrosschain()` selects
+    ///      the hub again itself.
+    function setUpCrosschain() public {
+        require(satellites.length > 0, "no satellites configured: a single-chain DAO does not need this kit");
+        require(hub.controller == address(0), "setUpCrosschain already ran");
+
+        _select(hub);
+        _requireActionableHub();
+
+        _prepareController(hub);
+
+        _createSatelliteDaos();
+        _installControllers();
+
+        _deployAdaptersAndRoute();
+
+        _configureGovernance();
+        _handOver();
+    }
+
+    /// @notice Step three: applies the prepared controller install onto the hub
+    ///         DAO and wires the hub's lanes.
+    /// @dev Re-checks the preconditions — they are cheap views, and the
+    ///      consumer may have revoked something between the two calls.
+    ///
+    ///      In-process, a revert here is recoverable: the kit passes
+    ///      `allowFailureMap = 0`, so the failed `DAO.execute` is atomic and
+    ///      the pending prepare survives on chain. Across processes it is NOT
+    ///      "just re-run the script" — see the README's recovery section.
+    function installCrosschain() public {
+        // Select before ANY read: setUpCrosschain() exits standing on a
+        // satellite fork, and `hasPermission` against an address with no code
+        // on the wrong chain reverts uninformatively — or, worse, an address
+        // collision answers with another chain's state.
+        _select(hub);
+
+        require(
+            hub.controller != address(0),
+            "call setUpCrosschain first: installCrosschain only applies the install it prepared"
+        );
+        _requireActionableHub();
+
+        // OSx would also refuse a second apply, but deep inside the PSP with a
+        // custom error naming a setup id. Asking `states` directly turns "you
+        // already installed this" into a sentence, before any broadcast.
+        (, bytes32 appliedSetupId) =
+            PluginSetupProcessor(hub.psp).states(keccak256(abi.encode(hub.dao, hub.controller)));
+        require(appliedSetupId == bytes32(0), "this controller is already installed on this DAO");
+
+        _applyController(hub);
+        _routeHub();
+        _assertHubRouted();
+
+        _report();
+    }
+
+    /// @dev The preconditions the consumer owes the kit on the hub DAO, checked
+    ///      while standing on the hub fork. The structural guarantee the kit
+    ///      used to have — it created every DAO itself — is gone on the hub, so
+    ///      nothing about how the consumer built theirs is assumed.
+    function _requireActionableHub() private view {
+        require(hub.dao != address(0), "hub.dao is not set: create the hub DAO after initCrosschain()");
+        require(
+            hub.dao.code.length > 0,
+            "hub.dao has no code on the hub chain: it was created on another fork, or not at all"
+        );
+        _assertDeployerBootstrapped(hub);
+        // `_applyController`'s first action is a `grant` executed AS the DAO,
+        // and `PermissionManager.grant` is `auth(ROOT)`. Every `DAOFactory` DAO
+        // holds ROOT on itself, but the premise of these checks is not trusting
+        // how the consumer built theirs.
+        require(
+            DAO(payable(hub.dao)).hasPermission(hub.dao, hub.dao, ROOT_PERMISSION_ID, ""),
+            "the hub DAO does not hold ROOT on itself: the kit acts BY executing grants as the DAO, which OSx gates on ROOT"
+        );
+    }
+
+    /// @dev Asserts what `_routeHub` just WROTE by reading it back off the
+    ///      controller — deliberately not `_assertLanesWired`, which reads
+    ///      adapter constructor state and would stay green even if the routing
+    ///      write had gone nowhere.
+    function _assertHubRouted() private {
+        _select(hub);
+        for (uint256 i = 0; i < satellites.length; i++) {
+            (address local, address remote) =
+                CrossChainController(payable(hub.controller)).chainToAdapter(satellites[i].chainId);
+            require(local == hub.adapter, "hub lane routed to the wrong local adapter");
+            require(remote == satellites[i].adapter, "hub lane routed to the wrong remote adapter");
+        }
+        console.log("[install] hub lanes routed and read back:", satellites.length);
     }
 
     /// @dev Printed before the first broadcast, because the kit cannot tell
@@ -994,19 +1196,6 @@ abstract contract CrossChainDeploy is Script {
                 ? "  source: forge (--account / --ledger / --private-key)"
                 : "  source: PRIVATE_KEY from the environment"
         );
-    }
-
-    /// @notice Every phase against forks that already exist.
-    /// @dev Split from {runWith} so a caller that must touch the forks first can
-    ///      still drive the real sequence — a fork suite funds the deployer on
-    ///      each chain, which has to happen on the same forks the phases use.
-    function phases() public {
-        _createSatelliteDaos();
-        _installControllers(minFailedMessageGas);
-        _deployAdaptersAndRoute();
-        _configureGovernance();
-        _handOver();
-        _report();
     }
 
     /// @notice Gas the controller withholds so a failed inbound message is

@@ -5,6 +5,7 @@ pragma solidity ^0.8.17;
 import { Test } from "forge-std/Test.sol";
 
 import { DAO } from "@aragon/osx/core/dao/DAO.sol";
+import { DAOFactory } from "@aragon/osx/framework/dao/DAOFactory.sol";
 import { PluginRepo } from "@aragon/osx/framework/plugin/repo/PluginRepo.sol";
 import { PluginRepoFactory } from "@aragon/osx/framework/plugin/repo/PluginRepoFactory.sol";
 
@@ -93,12 +94,30 @@ contract KitHarness is CrossChainDeploy {
         _createForks();
     }
 
-    /// @dev What `runWith` does, minus `_loadTopology`/`_createForks`, which the
-    ///      test has already done so it can fund the deployer on the same forks.
-    function phasesWith(uint256 _key) external {
-        deployerKey = _key;
-        deployer = _resolveDeployer();
-        phases();
+    /// @dev What a real consumer does between `initCrosschain()` and
+    ///      `setUpCrosschain()`: create its own bare DAO on the hub fork, as
+    ///      the deployer. The kit no longer does this — which is the point of
+    ///      the whole change — so the harness plays the consumer.
+    function createHubDao() external {
+        _select(hub);
+        _broadcast();
+        (DAO created,) = DAOFactory(hub.daoFactory)
+            .createDao(
+                DAOFactory.DAOSettings({
+                    trustedForwarder: address(0), daoURI: "", subdomain: "", metadata: bytes("")
+                }),
+                new DAOFactory.PluginSettings[](0)
+            );
+        vm.stopBroadcast();
+        hub.dao = address(created);
+    }
+
+    /// @dev A consumer installing its own hub governance after
+    ///      `installCrosschain()`. This uses the kit's Multisig installer,
+    ///      which is also the satellite default.
+    function installHubGovernance() external {
+        _select(hub);
+        _installMultisigGovernance(hub);
     }
 
     function selectHub() external {
@@ -135,29 +154,30 @@ contract KitHarness is CrossChainDeploy {
         delete satellites[_i].governors;
     }
 
+    /// @dev An empty topology, as a consumer with a broken loader would supply.
+    function clearSatellites() external {
+        delete satellites;
+    }
+
     // --- seams for the negative tests -------------------------------------
     //
-    // `phases()` is a single call, so a test that has to corrupt the run BETWEEN
-    // two phases -- the only way to reach most of the kit's refusal paths --
-    // cannot go through it. These split it at the points that matter.
-
-    /// @dev Everything up to and including governance, stopping before handover.
-    function phasesUpToHandover(uint256 _key) external {
-        deployerKey = _key;
-        deployer = _resolveDeployer();
-        _createSatelliteDaos();
-        _installControllers(minFailedMessageGas);
-        _deployAdaptersAndRoute();
-        _configureGovernance();
-    }
+    // Most refusal paths are reached the honest way now — by calling the two
+    // public entry points out of order, or after breaking a precondition on
+    // chain. These seams cover the rest: corrupting state the entry points
+    // read, and reaching internals whose guards fire mid-sequence.
 
     function handOver() external {
         _handOver();
     }
 
-    /// @dev Reaches `_installControllers`' own guard without a full run.
-    function installControllersWith(uint256 _gas) external {
-        _installControllers(_gas);
+    /// @dev A typo'd or wrong-chain hub DAO, as a consumer would supply it.
+    function setHubDao(address _dao) external {
+        hub.dao = _dao;
+    }
+
+    /// @dev Reaches `_prepareController`'s reserve guard on the HUB path.
+    function setMinFailedMessageGas(uint256 _gas) external {
+        minFailedMessageGas = _gas;
     }
 
     /// @dev Drives `_addGovernor`'s input validation directly.
@@ -171,24 +191,21 @@ contract KitHarness is CrossChainDeploy {
 
     /// @dev Puts a zero address into the roster the default installer reads, and
     ///      raises the threshold so the quorum genuinely becomes unreachable.
-    function poisonSatelliteRoster(uint256 _i) external {
-        satellites[_i].members.push(address(0));
-        satellites[_i].minApprovals = 2;
-    }
-
-    function installSatelliteGovernance(uint256 _i) external {
-        _installMultisigGovernance(satellites[_i]);
+    function poisonHubRoster() external {
+        hub.members.push(address(0));
+        hub.minApprovals = 2;
     }
 
     /// @dev Installs the Multisig with a chosen roster, BYPASSING the kit's own
     ///      validation, so a test can observe what OSx does with input the kit
-    ///      refuses. Never a production path.
-    function installMultisigUnchecked(uint256 _i, address[] memory _members, uint16 _minApprovals)
+    ///      refuses. On the hub, because that is the one DAO the deployer can
+    ///      still act as after a full run. Never a production path.
+    function installHubMultisigUnchecked(address[] memory _members, uint16 _minApprovals)
         external
         returns (address plugin)
     {
-        ChainCfg storage c = satellites[_i];
-        PluginRepo repo = PluginRepo(c.multisigRepo);
+        _select(hub);
+        PluginRepo repo = PluginRepo(hub.multisigRepo);
         PluginRepo.Version memory version = repo.getLatestVersion(repo.latestRelease());
 
         bytes memory data = abi.encode(
@@ -199,7 +216,7 @@ contract KitHarness is CrossChainDeploy {
         );
 
         _broadcast();
-        (plugin,) = _installPlugin(c, repo, version.tag, data);
+        (plugin,) = _installPlugin(hub, repo, version.tag, data);
         vm.stopBroadcast();
     }
 }
@@ -292,8 +309,19 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         return address(repo);
     }
 
+    /// @dev The whole consumer sequence, through the kit's two entry points.
     function _run() internal {
-        kit.phasesWith(DEPLOYER_KEY);
+        _runThroughInstall();
+        kit.installHubGovernance();
+    }
+
+    /// @dev Up to and including `installCrosschain()` — the point where the kit
+    ///      is done and the hub's governance is still the consumer's future.
+    function _runThroughInstall() internal {
+        kit.initCrosschain(DEPLOYER_KEY);
+        kit.createHubDao();
+        kit.setUpCrosschain();
+        kit.installCrosschain();
     }
 
     // -------------------------------------------------------------------------
@@ -335,13 +363,14 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         assertGt(_c.adapter.code.length, 0, "adapter");
     }
 
-    /// @notice **The invariant the kit exists for.** After a complete run no EOA
-    ///         can act as any DAO, and every declared governor still can.
-    function test_fullRun_handsEveryDaoToItsGovernance() public {
+    /// @notice **The invariant the kit exists for**, on the DAOs the kit
+    ///         creates: after a complete run no EOA can act as any satellite,
+    ///         and every declared governor still can. The hub is deliberately
+    ///         different — see
+    ///         {test_installLeavesTheDeployersExecuteOnTheHub}.
+    function test_fullRun_handsEverySatelliteToItsGovernance() public {
         _run();
 
-        kit.selectHub();
-        _assertHandedOver(kit.hubCfg());
         kit.selectSatellite(0);
         _assertHandedOver(kit.satCfg(0));
     }
@@ -440,11 +469,21 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
 
     /// @notice The shared conformance suite, run against this deployment. A
     ///         consumer inherits the same contract and points it at its own.
+    /// @dev The hub is asserted piecewise, without the deployer-revoked check:
+    ///      the kit revokes nothing on the hub — the consumer does, after its
+    ///      own governance is in. The next commit gives this shape a name,
+    ///      `assertHubConformant`.
     function test_fullRun_isConformant() public {
         _run();
 
         kit.selectHub();
-        assertConformant(kit.hubDeployed(), SEP_PSP, vm.addr(DEPLOYER_KEY));
+        Deployed memory h = kit.hubDeployed();
+        assertArtefactsExist(h);
+        assertGovernorsCanExecute(h);
+        assertControllerHoldsNothingOnItsDao(h);
+        assertDedicatedExecutor(h);
+        assertPspReturnedRoot(h, SEP_PSP);
+        assertDaoCanConfigureItsController(h);
         assertLaneWired(kit.hubCfg().controller, BASE_SEPOLIA, kit.hubCfg().adapter, kit.satCfg(0).adapter);
 
         kit.selectSatellite(0);
@@ -477,24 +516,171 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
 
     /// @notice A DAO with no declared governor must not be handed over.
     /// @dev The README's opening promise: "It will not finish a deployment that
-    ///      leaves a DAO nobody can act as." Until now nothing held it to that.
-    ///      The harness has carried `clearSatelliteGovernors` since it was
-    ///      written; the test it exists for was never added.
+    ///      leaves a DAO nobody can act as." The guard runs inside
+    ///      `setUpCrosschain()` now, immediately before each satellite revoke;
+    ///      it is reached here through the seam because nothing outside the kit
+    ///      can slip between governance and handover any more.
     function test_handoverRefusesADaoWithNoGovernor() public {
-        kit.phasesUpToHandover(DEPLOYER_KEY);
+        _run();
         kit.clearSatelliteGovernors(0);
 
         vm.expectRevert(bytes("DAO has no governor: nothing could act as it after handover"));
         kit.handOver();
     }
 
-    /// @notice A zero failure-gas reserve must be refused.
+    /// @notice A zero failure-gas reserve must be refused at prepare — on the
+    ///         hub path, which no longer passes through the satellite sweep.
     /// @dev Zero lets an out-of-gas payload revert the whole delivery, recording
     ///      nothing -- the message is then unreachable by both `retryMessage`
-    ///      and `cancelMessage`.
-    function test_installControllersRefusesAZeroFailureGasReserve() public {
+    ///      and `cancelMessage`. The value is baked into the proxy's
+    ///      `initialize` at prepare time, so the guard must fire there; the
+    ///      hub's first prepare is the earliest it can.
+    function test_prepareRefusesAZeroFailureGasReserve() public {
+        kit.initCrosschain(DEPLOYER_KEY);
+        kit.createHubDao();
+        kit.setMinFailedMessageGas(0);
+
         vm.expectRevert(bytes("minFailedMessageGas of 0 disables the failure-record reserve"));
-        kit.installControllersWith(0);
+        kit.setUpCrosschain();
+    }
+
+    // -------------------------------------------------------------------------
+    // The two-call contract
+    //
+    // The hub DAO is the consumer's now, so the kit can no longer guarantee by
+    // construction that it can act as it -- it has to refuse when it cannot.
+    // Each test below breaks exactly one precondition and expects the exact
+    // sentence, so a guard that starts reverting for a DIFFERENT reason fails
+    // the test rather than passing it by coincidence.
+    // -------------------------------------------------------------------------
+
+    /// @notice A topology with no satellites would "succeed" vacuously: a hub
+    ///         controller with zero lanes, nothing cross-chain about it.
+    function test_setUpRefusesAnEmptyTopology() public {
+        kit.initCrosschain(DEPLOYER_KEY);
+        kit.createHubDao();
+        kit.clearSatellites();
+
+        vm.expectRevert(bytes("no satellites configured: a single-chain DAO does not need this kit"));
+        kit.setUpCrosschain();
+    }
+
+    /// @notice A consumer that never created the hub DAO gets told what to do,
+    ///         not a revert about code at the zero address.
+    function test_setUpRefusesAnUnsetHubDao() public {
+        kit.initCrosschain(DEPLOYER_KEY);
+
+        vm.expectRevert(bytes("hub.dao is not set: create the hub DAO after initCrosschain()"));
+        kit.setUpCrosschain();
+    }
+
+    /// @notice `setUpCrosschain()` burns satellites and subdomains, so it must
+    ///         refuse a hub DAO that does not exist on the hub chain — not
+    ///         discover it at install, after those are unrecoverable.
+    function test_setUpRefusesAHubDaoWithNoCode() public {
+        kit.initCrosschain(DEPLOYER_KEY);
+        kit.setHubDao(address(0xDEAD));
+
+        vm.expectRevert(
+            bytes("hub.dao has no code on the hub chain: it was created on another fork, or not at all")
+        );
+        kit.setUpCrosschain();
+    }
+
+    /// @notice A second `setUpCrosschain()` would prepare a second controller
+    ///         and redeploy every satellite, subdomain burn included.
+    function test_setUpRefusesASecondRun() public {
+        kit.initCrosschain(DEPLOYER_KEY);
+        kit.createHubDao();
+        kit.setUpCrosschain();
+
+        vm.expectRevert(bytes("setUpCrosschain already ran"));
+        kit.setUpCrosschain();
+    }
+
+    /// @notice `installCrosschain()` has nothing to apply before
+    ///         `setUpCrosschain()` prepared it.
+    function test_installRefusesBeforeSetUp() public {
+        kit.initCrosschain(DEPLOYER_KEY);
+        kit.createHubDao();
+
+        vm.expectRevert(
+            bytes("call setUpCrosschain first: installCrosschain only applies the install it prepared")
+        );
+        kit.installCrosschain();
+    }
+
+    /// @notice The consumer revoked its own `EXECUTE` between the two calls;
+    ///         the kit must say so rather than fail deep inside `DAO.execute`.
+    function test_installRefusesWithoutExecuteOnTheHubDao() public {
+        kit.initCrosschain(DEPLOYER_KEY);
+        kit.createHubDao();
+        kit.setUpCrosschain();
+
+        kit.selectHub();
+        DAO dao = DAO(payable(kit.hubCfg().dao));
+        // Read the id BEFORE pranking: an external call in the revoke's own
+        // argument list would consume the prank and the revoke would run as
+        // the test contract instead of as the DAO.
+        bytes32 executeId = dao.EXECUTE_PERMISSION_ID();
+        vm.prank(address(dao));
+        dao.revoke(address(dao), vm.addr(DEPLOYER_KEY), executeId);
+
+        vm.expectRevert(
+            bytes(
+                "the resolved deployer does not hold EXECUTE on the DAO it just created: the signing account differs from the resolved one, so the handover would revoke nothing. Pass --sender <the signing address>, or set PRIVATE_KEY."
+            )
+        );
+        kit.installCrosschain();
+    }
+
+    /// @notice A DAO that is not ROOT on itself cannot lend the PSP ROOT, so
+    ///         the apply is structurally impossible — refuse it by name.
+    /// @dev `DAOFactory` DAOs always hold ROOT on themselves; the premise of
+    ///      the new gate is not trusting how the consumer built theirs.
+    function test_installRefusesWhenTheDaoLacksRootOnItself() public {
+        kit.initCrosschain(DEPLOYER_KEY);
+        kit.createHubDao();
+        kit.setUpCrosschain();
+
+        kit.selectHub();
+        DAO dao = DAO(payable(kit.hubCfg().dao));
+        // Id read before the prank; see test_installRefusesWithoutExecuteOnTheHubDao.
+        bytes32 rootId = dao.ROOT_PERMISSION_ID();
+        vm.prank(address(dao));
+        dao.revoke(address(dao), address(dao), rootId);
+
+        vm.expectRevert(
+            bytes(
+                "the hub DAO does not hold ROOT on itself: the kit acts BY executing grants as the DAO, which OSx gates on ROOT"
+            )
+        );
+        kit.installCrosschain();
+    }
+
+    /// @notice A second `installCrosschain()` must be told apart from the
+    ///         first: OSx would also refuse it, but deep inside the PSP with a
+    ///         setup id, after the preconditions all passed.
+    function test_installRefusesASecondInstall() public {
+        _runThroughInstall();
+
+        vm.expectRevert(bytes("this controller is already installed on this DAO"));
+        kit.installCrosschain();
+    }
+
+    /// @notice **The kit revokes nothing on the hub.** Every consumer's next
+    ///         step — installing governance, granting against final addresses —
+    ///         depends on the deployer's `EXECUTE` surviving the install, and
+    ///         nothing else would catch a regression of that promise.
+    function test_installLeavesTheDeployersExecuteOnTheHub() public {
+        _runThroughInstall();
+
+        kit.selectHub();
+        DAO dao = DAO(payable(kit.hubCfg().dao));
+        assertTrue(
+            dao.hasPermission(address(dao), vm.addr(DEPLOYER_KEY), dao.EXECUTE_PERMISSION_ID(), ""),
+            "the deployer's EXECUTE on the hub is the consumer's working authority; the kit must not take it"
+        );
     }
 
     /// @notice `address(0)` is not a governor.
@@ -523,12 +709,14 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
     /// @dev OSx's `Addresslist` rejects duplicates but accepts the zero address
     ///      and counts it, so 2-of-["0xAlice", "0x0"] installs cleanly and passes
     ///      a `hasPermission` check while being permanently unable to act.
+    ///      Staged on the hub: it is the one DAO the deployer can still act as
+    ///      after a full run, so without the guard this install would succeed.
     function test_multisigInstallerRefusesAZeroInTheRoster() public {
-        kit.phasesUpToHandover(DEPLOYER_KEY);
-        kit.poisonSatelliteRoster(0);
+        _runThroughInstall();
+        kit.poisonHubRoster();
 
         vm.expectRevert(bytes("governance roster contains the zero address: quorum would be unreachable"));
-        kit.installSatelliteGovernance(0);
+        kit.installHubGovernance();
     }
 
     /// @notice Why the guard above has to exist here, and not upstream.
@@ -548,14 +736,13 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
     ///      otherwise check: the plugin exists, holds EXECUTE, and
     ///      `_assertGovernable` passes. It simply cannot pass a proposal.
     function test_osxItselfAcceptsAZeroAddressInAMultisigRoster() public {
-        kit.phasesUpToHandover(DEPLOYER_KEY);
-        kit.selectSatellite(0);
+        _runThroughInstall();
 
         address[] memory poisoned = new address[](2);
         poisoned[0] = address(0xA11CE);
         poisoned[1] = address(0);
 
-        address plugin = kit.installMultisigUnchecked(0, poisoned, 2);
+        address plugin = kit.installHubMultisigUnchecked(poisoned, 2);
 
         assertEq(Addresslist(plugin).addresslistLength(), 2, "OSx counted the zero toward the roster");
         assertTrue(Addresslist(plugin).isListed(address(0)), "OSx listed the zero address as a signer");
