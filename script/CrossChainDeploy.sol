@@ -780,8 +780,29 @@ abstract contract CrossChainDeploy is Script {
     // Entry point
     // -------------------------------------------------------------------------
 
+    /// @notice Entry point. Accepts either signing path.
+    /// @dev Three ways in, in precedence order:
+    ///
+    ///        1. `PRIVATE_KEY` in the environment — read here.
+    ///        2. forge's own `--account <keystore>` / `--ledger` — used when
+    ///           `PRIVATE_KEY` is unset, because `vm.startBroadcast()` with no
+    ///           argument signs with whatever forge resolved.
+    ///        3. `--private-key 0x…` on the command line — also (2); forge
+    ///           resolves it and the kit never sees the value.
+    ///
+    ///      A keystore or a hardware wallet is the better habit: a plaintext key
+    ///      in the environment is readable by anything running as you, and
+    ///      leaves no record of which key signed a deployment. But CI usually
+    ///      has a secret and not a keystore, and refusing that just pushes
+    ///      people to `--private-key` on the command line, where the key is
+    ///      visible in `ps` to every user on the box. So both are accepted.
+    ///
+    ///      The precedence is the sharp edge: a stale `PRIVATE_KEY` left in a
+    ///      shell silently wins over `--account`. The kit cannot detect which
+    ///      flags forge was given, so it prints the resolved signer and its
+    ///      source before anything is broadcast — see {_reportSigner}.
     function run() public {
-        runWith(0);
+        runWith(vm.envOr("PRIVATE_KEY", uint256(0)));
     }
 
     /// @notice The whole deployment, in order.
@@ -793,10 +814,25 @@ abstract contract CrossChainDeploy is Script {
     function runWith(uint256 _deployerKey) public {
         deployerKey = _deployerKey;
         deployer = _resolveDeployer();
+        _reportSigner();
 
         _loadTopology();
         _createForks();
         phases();
+    }
+
+    /// @dev Printed before the first broadcast, because the kit cannot tell
+    ///      whether forge was given `--account`: if a stale `PRIVATE_KEY` is
+    ///      sitting in the environment it wins, and the only way an operator
+    ///      catches that is by seeing the address. Deployments are irreversible;
+    ///      the wrong signer is worth one line of output.
+    function _reportSigner() private view {
+        console.log("Signing as:", deployer);
+        console.log(
+            deployerKey == 0
+                ? "  source: forge (--account / --ledger / --private-key)"
+                : "  source: PRIVATE_KEY from the environment"
+        );
     }
 
     /// @notice Every phase against forks that already exist.

@@ -113,9 +113,21 @@ assertLaneWired(hub.controller, satelliteChainId, hub.adapter, satellite.adapter
 
 ## Two things that will bite
 
-**Signing.** Use `--account` or `--ledger`. The kit never reads a key from the
-environment: a plaintext key in a shell is visible to every process, lands in
-shell history, and leaves no record of which key signed a deployment.
+**Signing.** Three ways in, in precedence order:
+
+1. `PRIVATE_KEY` in the environment
+2. `--account <keystore>` or `--ledger`
+3. `--private-key 0x…` on the command line
+
+A keystore or hardware wallet is the better habit — a plaintext key in the
+environment is readable by anything running as you, and leaves no record of which
+key signed. But CI usually has a secret rather than a keystore, and refusing that
+only pushes people to `--private-key`, where the key is visible in `ps` to every
+user on the box.
+
+The sharp edge is the precedence: a stale `PRIVATE_KEY` in your shell silently
+beats `--account`. The kit cannot see which flags forge got, so it prints the
+resolved signer and its source before broadcasting anything. Read that line.
 
 **A failed run is repeated, not resumed.** `forge script --resume` replays from
 `broadcast/`; otherwise start over. Starting over abandons the DAOs the failed
