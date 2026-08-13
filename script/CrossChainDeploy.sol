@@ -243,23 +243,17 @@ abstract contract CrossChainDeploy is Script {
     // Phase 2 — the DAOs
     // -------------------------------------------------------------------------
 
-    /// @notice A DAO on every chain, created with NO plugins.
+    /// @notice A DAO on every satellite chain, created with NO plugins.
     /// @dev `DAOFactory` still registers it — so the Aragon App indexes it — and,
     ///      seeing an empty plugin array, grants `EXECUTE_PERMISSION` to the
     ///      caller. That grant is what lets every later phase run unattended,
     ///      and the final phase is what takes it back.
     ///
-    ///      The kit creates every DAO, without exception. That is what makes
-    ///      "the deployer can act as this DAO" structural rather than something
-    ///      a consumer has to remember to arrange.
-    function _createDaos() internal {
-        _select(hub);
-        _broadcast();
-        hub.dao = _createBareDao(hub);
-        vm.stopBroadcast();
-        _assertDeployerBootstrapped(hub);
-        console.log("[2] hub DAO", hub.dao);
-
+    ///      Satellites only. The hub DAO is the consumer's — created by it,
+    ///      between `initCrosschain()` and `setUpCrosschain()`, on the kit's hub
+    ///      fork — so "the deployer can act as it" is checked as a precondition
+    ///      rather than guaranteed by construction.
+    function _createSatelliteDaos() internal {
         for (uint256 i = 0; i < satellites.length; i++) {
             _select(satellites[i]);
             _broadcast();
@@ -1007,7 +1001,7 @@ abstract contract CrossChainDeploy is Script {
     ///      still drive the real sequence — a fork suite funds the deployer on
     ///      each chain, which has to happen on the same forks the phases use.
     function phases() public {
-        _createDaos();
+        _createSatelliteDaos();
         _installControllers(minFailedMessageGas);
         _deployAdaptersAndRoute();
         _configureGovernance();

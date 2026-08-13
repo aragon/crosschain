@@ -145,7 +145,7 @@ contract KitHarness is CrossChainDeploy {
     function phasesUpToHandover(uint256 _key) external {
         deployerKey = _key;
         deployer = _resolveDeployer();
-        _createDaos();
+        _createSatelliteDaos();
         _installControllers(minFailedMessageGas);
         _deployAdaptersAndRoute();
         _configureGovernance();
