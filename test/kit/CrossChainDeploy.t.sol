@@ -126,6 +126,51 @@ contract KitHarness is CrossChainDeploy {
     function clearSatelliteGovernors(uint256 _i) external {
         delete satellites[_i].governors;
     }
+
+    // --- seams for the negative tests -------------------------------------
+    //
+    // `phases()` is a single call, so a test that has to corrupt the run BETWEEN
+    // two phases -- the only way to reach most of the kit's refusal paths --
+    // cannot go through it. These split it at the points that matter.
+
+    /// @dev Everything up to and including governance, stopping before handover.
+    function phasesUpToHandover(uint256 _key) external {
+        deployerKey = _key;
+        deployer = _resolveDeployer();
+        _createDaos();
+        _installControllers(minFailedMessageGas);
+        _deployAdaptersAndRoute();
+        _configureGovernance();
+    }
+
+    function handOver() external {
+        _handOver();
+    }
+
+    /// @dev Reaches `_installControllers`' own guard without a full run.
+    function installControllersWith(uint256 _gas) external {
+        _installControllers(_gas);
+    }
+
+    /// @dev Drives `_addGovernor`'s input validation directly.
+    function addHubGovernor(address _governor) external {
+        _addGovernor(hub, _governor);
+    }
+
+    function setDeployer(address _who) external {
+        deployer = _who;
+    }
+
+    /// @dev Puts a zero address into the roster the default installer reads, and
+    ///      raises the threshold so the quorum genuinely becomes unreachable.
+    function poisonSatelliteRoster(uint256 _i) external {
+        satellites[_i].members.push(address(0));
+        satellites[_i].minApprovals = 2;
+    }
+
+    function installSatelliteGovernance(uint256 _i) external {
+        _installMultisigGovernance(satellites[_i]);
+    }
 }
 
 /// @notice Drives the kit end to end across Sepolia and Base Sepolia, against
@@ -153,7 +198,7 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
     address internal constant SEP_ROUTER = 0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59;
     address internal constant BASESEP_ROUTER = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
 
-    // Local, because  maps mainnets only -- deliberately, it is
+    // Local, because maps mainnets only -- deliberately, it is
     // audited production source.
     uint256 internal constant SEPOLIA = 11_155_111;
     uint256 internal constant BASE_SEPOLIA = 84_532;
@@ -180,9 +225,7 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         address sepRepo = _publishCrossChainRepo(hubFork, SEP_REPO_FACTORY, deployer);
         address baseRepo = _publishCrossChainRepo(satFork, BASESEP_REPO_FACTORY, deployer);
 
-        kit.addChain(
-            SEPOLIA, SEP_DAO_FACTORY, SEP_PSP, SEP_REPO_FACTORY, sepRepo, SEP_MULTISIG_REPO, SEP_ROUTER
-        );
+        kit.addChain(SEPOLIA, SEP_DAO_FACTORY, SEP_PSP, SEP_REPO_FACTORY, sepRepo, SEP_MULTISIG_REPO, SEP_ROUTER);
         kit.addChain(
             BASE_SEPOLIA,
             BASESEP_DAO_FACTORY,
@@ -199,22 +242,20 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
 
     /// @dev Publishes this repo's own `CrossChainControllerSetup` as release 1
     ///      build 1, and funds the deployer on that fork.
-    function _publishCrossChainRepo(uint256 _fork, address _repoFactory, address _deployer)
-        internal
-        returns (address)
-    {
+    function _publishCrossChainRepo(uint256 _fork, address _repoFactory, address _deployer) internal returns (address) {
         vm.selectFork(_fork);
         vm.deal(_deployer, 100 ether);
 
         vm.startPrank(_deployer);
         address setup = address(new CrossChainControllerSetup(address(new CrossChainController())));
-        PluginRepo repo = PluginRepoFactory(_repoFactory).createPluginRepoWithFirstVersion(
-            string.concat("kit-", vm.toString(_fork), "-", vm.toString(uint160(address(this)))),
-            setup,
-            _deployer,
-            bytes("kit"),
-            bytes("kit")
-        );
+        PluginRepo repo = PluginRepoFactory(_repoFactory)
+            .createPluginRepoWithFirstVersion(
+                string.concat("kit-", vm.toString(_fork), "-", vm.toString(uint160(address(this)))),
+                setup,
+                _deployer,
+                bytes("kit"),
+                bytes("kit")
+            );
         vm.stopPrank();
 
         return address(repo);
@@ -373,9 +414,7 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
 
         kit.selectHub();
         assertConformant(kit.hubDeployed(), SEP_PSP, vm.addr(DEPLOYER_KEY));
-        assertLaneWired(
-            kit.hubCfg().controller, BASE_SEPOLIA, kit.hubCfg().adapter, kit.satCfg(0).adapter
-        );
+        assertLaneWired(kit.hubCfg().controller, BASE_SEPOLIA, kit.hubCfg().adapter, kit.satCfg(0).adapter);
 
         kit.selectSatellite(0);
         assertConformant(kit.satDeployed(0), BASESEP_PSP, vm.addr(DEPLOYER_KEY));
@@ -394,5 +433,70 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         assertEq(fresh.satCfg(0).multisigRepo, BASESEP_MULTISIG_REPO, "satellite multisig repo");
         assertEq(fresh.satCfg(0).minApprovals, 1, "threshold");
         assertEq(fresh.hubCfg().members.length, 1, "roster");
+    }
+
+    // -------------------------------------------------------------------------
+    // Refusals
+    //
+    // Everything above drives a CORRECT deployment and checks the outcome. That
+    // shape can only ever prove the kit does the right thing when asked
+    // correctly -- and every guard here was previously deletable with the suite
+    // still green, because nothing ever asked the kit to say no.
+    // -------------------------------------------------------------------------
+
+    /// @notice A DAO with no declared governor must not be handed over.
+    /// @dev The README's opening promise: "It will not finish a deployment that
+    ///      leaves a DAO nobody can act as." Until now nothing held it to that.
+    ///      The harness has carried `clearSatelliteGovernors` since it was
+    ///      written; the test it exists for was never added.
+    function test_handoverRefusesADaoWithNoGovernor() public {
+        kit.phasesUpToHandover(DEPLOYER_KEY);
+        kit.clearSatelliteGovernors(0);
+
+        vm.expectRevert(bytes("DAO has no governor: nothing could act as it after handover"));
+        kit.handOver();
+    }
+
+    /// @notice A zero failure-gas reserve must be refused.
+    /// @dev Zero lets an out-of-gas payload revert the whole delivery, recording
+    ///      nothing -- the message is then unreachable by both `retryMessage`
+    ///      and `cancelMessage`.
+    function test_installControllersRefusesAZeroFailureGasReserve() public {
+        vm.expectRevert(bytes("minFailedMessageGas of 0 disables the failure-record reserve"));
+        kit.installControllersWith(0);
+    }
+
+    /// @notice `address(0)` is not a governor.
+    /// @dev OSx will report a grant against the zero address, so without this
+    ///      the governability proof passes on a DAO nothing can act as.
+    function test_addGovernorRefusesTheZeroAddress() public {
+        vm.expectRevert(bytes("governor is the zero address: a DAO governed by nobody is not governed"));
+        kit.addHubGovernor(address(0));
+    }
+
+    /// @notice The deployer is not governance -- phase 6 revokes it.
+    function test_addGovernorRefusesTheDeployer() public {
+        address who = makeAddr("the-deployer");
+        kit.setDeployer(who);
+
+        vm.expectRevert(
+            bytes(
+                "governor is the deployer, whose EXECUTE the handover revokes: declare the governance that outlives the run"
+            )
+        );
+        kit.addHubGovernor(who);
+    }
+
+    /// @notice A roster entry of `address(0)` raises the threshold without
+    ///         adding a signer, so the quorum can never be met.
+    /// @dev OSx's `Addresslist` rejects duplicates but accepts the zero address
+    ///      and counts it, so 2-of-["0xAlice", "0x0"] installs cleanly and passes
+    ///      a `hasPermission` check while being permanently unable to act.
+    function test_multisigInstallerRefusesAZeroInTheRoster() public {
+        kit.phasesUpToHandover(DEPLOYER_KEY);
+        kit.poisonSatelliteRoster(0);
+
+        vm.expectRevert(bytes("governance roster contains the zero address: quorum would be unreachable"));
+        kit.installSatelliteGovernance(0);
     }
 }

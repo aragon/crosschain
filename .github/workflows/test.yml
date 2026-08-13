@@ -35,5 +35,25 @@ jobs:
       - name: Run Forge build
         run: forge build --sizes
 
+      # The kit suite forks Sepolia and Base Sepolia. Without these it calls
+      # `vm.skip` in `setUp`, and the job then reports a green run that exercised
+      # none of the deploy kit -- which is the state this repo has been in since
+      # the kit landed. Public endpoints, so no secret is involved and a fork
+      # does not need one configured.
       - name: Run Forge tests
+        env:
+          SEPOLIA_RPC_URL: https://ethereum-sepolia-rpc.publicnode.com
+          BASE_SEPOLIA_RPC_URL: https://base-sepolia-rpc.publicnode.com
         run: forge test -vvv
+
+      # A skipped suite is indistinguishable from a passing one in the summary
+      # above, so assert the one that matters actually ran.
+      - name: Assert the kit suite was not skipped
+        env:
+          SEPOLIA_RPC_URL: https://ethereum-sepolia-rpc.publicnode.com
+          BASE_SEPOLIA_RPC_URL: https://base-sepolia-rpc.publicnode.com
+        run: |
+          out=$(forge test --match-path 'test/kit/*')
+          echo "$out"
+          echo "$out" | grep -qE '[1-9][0-9]* skipped' \
+            && { echo "::error::kit suite skipped -- the fork RPCs did not resolve"; exit 1; } || true

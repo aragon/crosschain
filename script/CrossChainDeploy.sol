@@ -9,9 +9,7 @@ import { DAOFactory } from "@aragon/osx/framework/dao/DAOFactory.sol";
 import { PluginRepo } from "@aragon/osx/framework/plugin/repo/PluginRepo.sol";
 import { PluginRepoFactory } from "@aragon/osx/framework/plugin/repo/PluginRepoFactory.sol";
 import { PluginSetupProcessor } from "@aragon/osx/framework/plugin/setup/PluginSetupProcessor.sol";
-import {
-    PluginSetupRef, hashHelpers
-} from "@aragon/osx/framework/plugin/setup/PluginSetupProcessorHelpers.sol";
+import { PluginSetupRef, hashHelpers } from "@aragon/osx/framework/plugin/setup/PluginSetupProcessorHelpers.sol";
 import { PermissionManager } from "@aragon/osx/core/permission/PermissionManager.sol";
 import { IPluginSetup } from "@aragon/osx-commons-contracts/src/plugin/setup/IPluginSetup.sol";
 import { IExecutor, Action } from "@aragon/osx-commons-contracts/src/executors/IExecutor.sol";
@@ -21,6 +19,7 @@ import { ICrossChainController } from "../src/ICrossChainController.sol";
 import { CrossChainControllerSetup } from "../src/CrossChainControllerSetup.sol";
 import { CCIPAdapter } from "../src/adapters/CCIP/CCIPAdapter.sol";
 import { BaseAdapter } from "../src/adapters/BaseAdapter.sol";
+import { IBaseAdapter } from "../src/adapters/IBaseAdapter.sol";
 import { TestnetCCIPAdapter } from "./testnet/TestnetCCIPAdapter.sol";
 
 /// @title CrossChainDeploy
@@ -208,13 +207,36 @@ abstract contract CrossChainDeploy is Script {
         }
     }
 
+    /// @dev Foundry's own default script sender, used whenever nothing else set
+    ///      one: `address(uint160(uint256(keccak256("foundry default caller"))))`.
+    address internal constant FOUNDRY_DEFAULT_SENDER = 0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38;
+
     /// @dev `msg.sender` inside the script's own frame is whoever called the
     ///      entry point, NOT the broadcaster — `startBroadcast` changes the
     ///      sender of the calls the script MAKES, not the frame evaluating the
     ///      arguments. Reading `msg.sender` to mean "the deployer" silently
     ///      addresses the wrong account.
+    ///
+    ///      Worse, forge only populates the script sender from `--private-key`.
+    ///      Under `--account` or `--ledger` it stays at {FOUNDRY_DEFAULT_SENDER}
+    ///      while an entirely different wallet signs — measured against forge
+    ///      1.3.5 and 1.6.0. That is the dangerous combination, and it is the one
+    ///      every README here recommends: `DAOFactory` grants `EXECUTE` to the
+    ///      real signer, phase 6 revokes it from the constant, OSx's `_revoke`
+    ///      no-ops on a permission that was never set, and the run prints success
+    ///      while the signing EOA keeps unconditional `EXECUTE` on every DAO for
+    ///      good.
+    ///
+    ///      So refuse to guess rather than guess wrong. Checked again from the
+    ///      other side once the DAOs exist — see {_assertDeployerBootstrapped}.
     function _resolveDeployer() internal view returns (address) {
-        return deployerKey == 0 ? msg.sender : vm.addr(deployerKey);
+        if (deployerKey != 0) return vm.addr(deployerKey);
+
+        require(
+            msg.sender != FOUNDRY_DEFAULT_SENDER,
+            "cannot resolve the signing address: under --account/--ledger forge leaves the script sender at its default, so the handover would revoke EXECUTE from the wrong account and the real signer would keep it. Pass --sender <the signing address> too, or set PRIVATE_KEY."
+        );
+        return msg.sender;
     }
 
     // -------------------------------------------------------------------------
@@ -235,6 +257,7 @@ abstract contract CrossChainDeploy is Script {
         _broadcast();
         hub.dao = _createBareDao(hub);
         vm.stopBroadcast();
+        _assertDeployerBootstrapped(hub);
         console.log("[2] hub DAO", hub.dao);
 
         for (uint256 i = 0; i < satellites.length; i++) {
@@ -242,20 +265,44 @@ abstract contract CrossChainDeploy is Script {
             _broadcast();
             satellites[i].dao = _createBareDao(satellites[i]);
             vm.stopBroadcast();
+            _assertDeployerBootstrapped(satellites[i]);
             console.log("[2] satellite DAO", satellites[i].dao);
         }
     }
 
-    function _createBareDao(ChainCfg storage _chain) private returns (address) {
-        (DAO created,) = DAOFactory(_chain.daoFactory).createDao(
-            DAOFactory.DAOSettings({
-                trustedForwarder: address(0),
-                daoURI: "",
-                subdomain: _chain.daoSubdomain,
-                metadata: _chain.daoMetadata
-            }),
-            new DAOFactory.PluginSettings[](0)
+    /// @dev The whole deployment rests on one assumption: that `deployer` names
+    ///      the account `DAOFactory` just granted `EXECUTE` to. Everything after
+    ///      this point acts as the DAO through that grant, and phase 6 revokes
+    ///      exactly that address.
+    ///
+    ///      Nothing before now can prove it. {_resolveDeployer} rejects the one
+    ///      case it can recognise, but an operator who passes a `--sender` that
+    ///      is merely WRONG — a second account in the same keystore, a typo, the
+    ///      Safe rather than its signer — produces the identical silent failure:
+    ///      a revoke against an address that holds nothing, and a real signer
+    ///      left with permanent authority over every DAO in the topology.
+    ///
+    ///      Reading the grant back settles it against on-chain state instead of
+    ///      against a guess about how forge resolved a flag. Two views cost
+    ///      nothing and this aborts before any authority has been handed out.
+    function _assertDeployerBootstrapped(ChainCfg storage _chain) private view {
+        require(
+            DAO(payable(_chain.dao)).hasPermission(_chain.dao, deployer, EXECUTE_PERMISSION_ID, ""),
+            "the resolved deployer does not hold EXECUTE on the DAO it just created: the signing account differs from the resolved one, so the handover would revoke nothing. Pass --sender <the signing address>, or set PRIVATE_KEY."
         );
+    }
+
+    function _createBareDao(ChainCfg storage _chain) private returns (address) {
+        (DAO created,) = DAOFactory(_chain.daoFactory)
+            .createDao(
+                DAOFactory.DAOSettings({
+                    trustedForwarder: address(0),
+                    daoURI: "",
+                    subdomain: _chain.daoSubdomain,
+                    metadata: _chain.daoMetadata
+                }),
+                new DAOFactory.PluginSettings[](0)
+            );
         return address(created);
     }
 
@@ -288,15 +335,15 @@ abstract contract CrossChainDeploy is Script {
         PluginSetupRef memory ref = PluginSetupRef({ versionTag: _tag, pluginSetupRepo: _repo });
 
         IPluginSetup.PreparedSetupData memory prepared;
-        (plugin, prepared) = PluginSetupProcessor(_chain.psp).prepareInstallation(
-            _chain.dao, PluginSetupProcessor.PrepareInstallationParams({ pluginSetupRef: ref, data: _data })
-        );
+        (plugin, prepared) = PluginSetupProcessor(_chain.psp)
+            .prepareInstallation(
+                _chain.dao, PluginSetupProcessor.PrepareInstallationParams({ pluginSetupRef: ref, data: _data })
+            );
         helpers = prepared.helpers;
 
         Action[] memory actions = new Action[](3);
         actions[0].to = _chain.dao;
-        actions[0].data =
-            abi.encodeCall(PermissionManager.grant, (_chain.dao, _chain.psp, ROOT_PERMISSION_ID));
+        actions[0].data = abi.encodeCall(PermissionManager.grant, (_chain.dao, _chain.psp, ROOT_PERMISSION_ID));
         actions[1].to = _chain.psp;
         actions[1].data = abi.encodeCall(
             PluginSetupProcessor.applyInstallation,
@@ -311,8 +358,7 @@ abstract contract CrossChainDeploy is Script {
             )
         );
         actions[2].to = _chain.dao;
-        actions[2].data =
-            abi.encodeCall(PermissionManager.revoke, (_chain.dao, _chain.psp, ROOT_PERMISSION_ID));
+        actions[2].data = abi.encodeCall(PermissionManager.revoke, (_chain.dao, _chain.psp, ROOT_PERMISSION_ID));
 
         IExecutor(_chain.dao).execute(bytes32(0), actions, 0);
     }
@@ -323,9 +369,8 @@ abstract contract CrossChainDeploy is Script {
     ///      Empty subdomain: the repo is addressed directly, so no ENS
     ///      registration is needed. Must be called inside an active broadcast.
     function _publishRepo(ChainCfg storage _chain, address _setup) internal returns (PluginRepo) {
-        return PluginRepoFactory(_chain.pluginRepoFactory).createPluginRepoWithFirstVersion(
-            "", _setup, _resolveDeployer(), bytes("kit"), bytes("kit")
-        );
+        return PluginRepoFactory(_chain.pluginRepoFactory)
+            .createPluginRepoWithFirstVersion("", _setup, _resolveDeployer(), bytes("kit"), bytes("kit"));
     }
 
     /// @notice Grants `EXECUTE` on this chain's DAO, executed AS the DAO.
@@ -430,9 +475,8 @@ abstract contract CrossChainDeploy is Script {
         // unconditionally, so any OTHER guardian would be an ADDITIONAL one that
         // can freeze every message on the chain, never receives `UNPAUSE`, and
         // is not revoked by an uninstall.
-        bytes memory data = CrossChainControllerSetup(version.pluginSetup).encodeInstallationParameters(
-            DEDICATED_EXECUTOR, _chain.dao, _minFailedMessageGas
-        );
+        bytes memory data = CrossChainControllerSetup(version.pluginSetup)
+            .encodeInstallationParameters(DEDICATED_EXECUTOR, _chain.dao, _minFailedMessageGas);
 
         _broadcast();
         (address plugin, address[] memory helpers) = _installPlugin(_chain, repo, version.tag, data);
@@ -475,18 +519,92 @@ abstract contract CrossChainDeploy is Script {
         for (uint256 i = 0; i < satellites.length; i++) {
             _routeSatellite(i);
         }
+
+        _assertLanesWired();
+    }
+
+    /// @notice Reads every lane back off-chain, both halves, both directions.
+    /// @dev The two halves of a lane are not equally forgiving. `chainToAdapter`
+    ///      is controller storage a governed DAO can rewrite with `updateConfig`.
+    ///      `trustedRemote` is set in the adapter's CONSTRUCTOR and has no setter
+    ///      — get it wrong and the only repair is a replacement adapter on both
+    ///      chains plus a governance round on each, after the deployer's
+    ///      authority is already gone.
+    ///
+    ///      So the immutable half is the one worth proving, and it was the half
+    ///      nothing checked. The failure it prevents is specifically quiet:
+    ///      passing a `.dao` where a `.controller` belongs, or the remote
+    ///      ADAPTER where the remote CONTROLLER belongs, deploys and routes
+    ///      without complaint, and every inbound message then reverts
+    ///      `REMOTE_NOT_TRUSTED` — invisible until the first veto fails to
+    ///      arrive.
+    ///
+    ///      The remote is the remote CONTROLLER, not its adapter, because
+    ///      `sendMessage` runs under `delegatecall` from the controller, so the
+    ///      bridge attributes the message to the controller's address.
+    function _assertLanesWired() private {
+        _select(hub);
+        require(
+            BaseAdapter(hub.adapter).CROSS_CHAIN_CONTROLLER() == hub.controller,
+            "hub adapter points at the wrong controller"
+        );
+        for (uint256 i = 0; i < satellites.length; i++) {
+            require(
+                BaseAdapter(hub.adapter).trustedRemote(satellites[i].chainId) == satellites[i].controller,
+                "hub adapter does not trust the satellite CONTROLLER for this lane (constructor-only: not repairable after handover)"
+            );
+        }
+
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _select(satellites[i]);
+            require(
+                BaseAdapter(satellites[i].adapter).CROSS_CHAIN_CONTROLLER() == satellites[i].controller,
+                "satellite adapter points at the wrong controller"
+            );
+            require(
+                BaseAdapter(satellites[i].adapter).trustedRemote(hub.chainId) == hub.controller,
+                "satellite adapter does not trust the hub CONTROLLER (constructor-only: not repairable after handover)"
+            );
+            _requireMapsChain(satellites[i].adapter, hub.chainId);
+        }
+
+        _select(hub);
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _requireMapsChain(hub.adapter, satellites[i].chainId);
+        }
+
+        console.log("[4] lanes verified: trusted remotes and chain-id mappings agree on both sides");
+    }
+
+    /// @dev Asks the deployed adapter, rather than trusting {_isTestnet} to agree
+    ///      with `TestnetCCIPAdapter`'s table. Those are two hand-maintained lists
+    ///      in different files, and only one of them is consulted when choosing
+    ///      which class to construct: a chain in {_isTestnet} but absent from the
+    ///      subclass's table — or a chain in neither, deployed as a production
+    ///      `CCIPAdapter` whose map is mainnet-only — produces an adapter that
+    ///      reverts `UNKNOWN_CHAIN_ID` on every send over that lane. The
+    ///      deployment completes; the lane never carries a message.
+    ///
+    ///      One `staticcall` per lane settles it against the bytecode actually
+    ///      deployed, which no amount of list-comparing can.
+    function _requireMapsChain(address _adapter, uint256 _chainId) private view {
+        try IBaseAdapter(_adapter).toNativeChainId(_chainId) returns (uint256 native) {
+            require(native != 0, "adapter maps this chain id to a zero selector");
+        } catch {
+            revert(
+                "adapter cannot map a chain id it must serve: the deployed adapter class has no selector for this lane, so every send over it would revert"
+            );
+        }
     }
 
     function _deployHubAdapter() private {
         _select(hub);
 
-        BaseAdapter.TrustedRemoteConfig[] memory trusted =
-            new BaseAdapter.TrustedRemoteConfig[](satellites.length);
+        BaseAdapter.TrustedRemoteConfig[] memory trusted = new BaseAdapter.TrustedRemoteConfig[](satellites.length);
         for (uint256 i = 0; i < satellites.length; i++) {
             require(satellites[i].controller != address(0), "satellite controller missing: install controllers first");
             trusted[i] = BaseAdapter.TrustedRemoteConfig({
-                standardChainId: satellites[i].chainId,
-                trustedRemote: satellites[i].controller
+                standardChainId: satellites[i].chainId, trustedRemote: satellites[i].controller
             });
         }
 
@@ -501,8 +619,7 @@ abstract contract CrossChainDeploy is Script {
         require(hub.controller != address(0), "hub controller missing: install controllers first");
 
         BaseAdapter.TrustedRemoteConfig[] memory trusted = new BaseAdapter.TrustedRemoteConfig[](1);
-        trusted[0] =
-            BaseAdapter.TrustedRemoteConfig({ standardChainId: hub.chainId, trustedRemote: hub.controller });
+        trusted[0] = BaseAdapter.TrustedRemoteConfig({ standardChainId: hub.chainId, trustedRemote: hub.controller });
 
         _broadcast();
         satellites[_i].adapter = _newAdapter(satellites[_i], trusted);
@@ -547,14 +664,13 @@ abstract contract CrossChainDeploy is Script {
 
         if (_isTestnet(_chain.chainId)) {
             return address(
-                new TestnetCCIPAdapter{ salt: salt }(
-                    _chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted
-                )
+                new TestnetCCIPAdapter{
+                    salt: salt
+                }(_chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted)
             );
         }
-        return address(
-            new CCIPAdapter{ salt: salt }(_chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted)
-        );
+        return
+            address(new CCIPAdapter{ salt: salt }(_chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted));
     }
 
     /// @dev Must match `TestnetCCIPAdapter`'s table. A chain listed here but not
@@ -565,15 +681,12 @@ abstract contract CrossChainDeploy is Script {
 
     function _routeHub() private {
         uint256[] memory chainIds = new uint256[](satellites.length);
-        ICrossChainController.ChainConfig[] memory configs =
-            new ICrossChainController.ChainConfig[](satellites.length);
+        ICrossChainController.ChainConfig[] memory configs = new ICrossChainController.ChainConfig[](satellites.length);
 
         for (uint256 i = 0; i < satellites.length; i++) {
             chainIds[i] = satellites[i].chainId;
-            configs[i] = ICrossChainController.ChainConfig({
-                localAdapter: hub.adapter,
-                remoteAdapter: satellites[i].adapter
-            });
+            configs[i] =
+                ICrossChainController.ChainConfig({ localAdapter: hub.adapter, remoteAdapter: satellites[i].adapter });
         }
 
         _updateConfig(hub, chainIds, configs);
@@ -584,10 +697,8 @@ abstract contract CrossChainDeploy is Script {
         chainIds[0] = hub.chainId;
 
         ICrossChainController.ChainConfig[] memory configs = new ICrossChainController.ChainConfig[](1);
-        configs[0] = ICrossChainController.ChainConfig({
-            localAdapter: satellites[_i].adapter,
-            remoteAdapter: hub.adapter
-        });
+        configs[0] =
+            ICrossChainController.ChainConfig({ localAdapter: satellites[_i].adapter, remoteAdapter: hub.adapter });
 
         _updateConfig(satellites[_i], chainIds, configs);
     }
@@ -653,7 +764,19 @@ abstract contract CrossChainDeploy is Script {
     ///      that the DAO is not frozen, which needs at least one address able to
     ///      act without qualification. Conditional grants are for the consumer's
     ///      own tests, which know what those conditions permit.
+    ///      Two addresses are rejected outright. `address(0)` because a hook that
+    ///      declares an unset config field would otherwise be asking
+    ///      `_assertGovernable` a question about the zero address — and OSx will
+    ///      happily report a grant against it, so the check would pass on a DAO
+    ///      nothing can act as. And `deployer`, because phase 6 revokes exactly
+    ///      that address: declaring it means the governability proof is made
+    ///      against an authority the very next phase destroys.
     function _addGovernor(ChainCfg storage _chain, address _governor) internal {
+        require(_governor != address(0), "governor is the zero address: a DAO governed by nobody is not governed");
+        require(
+            _governor != deployer,
+            "governor is the deployer, whose EXECUTE the handover revokes: declare the governance that outlives the run"
+        );
         _chain.governors.push(_governor);
     }
 
@@ -678,6 +801,22 @@ abstract contract CrossChainDeploy is Script {
         require(_chain.members.length > 0, "governance roster is empty");
         require(_chain.minApprovals > 0, "minApprovals must be at least 1");
         require(_chain.minApprovals <= _chain.members.length, "minApprovals exceeds the roster size");
+
+        // Roster ENTRIES, not just its length. OSx `Addresslist._addAddresses`
+        // rejects duplicates but accepts `address(0)` and counts it toward
+        // `addresslistLength`, so a placeholder left in a config file raises the
+        // effective threshold without raising the number of signers who can
+        // ever approve. A 2-of-["0xAlice", "0x0"] multisig installs cleanly, is
+        // granted EXECUTE, satisfies `_assertGovernable` — which asks whether the
+        // plugin HOLDS the permission, not whether its quorum is reachable — and
+        // leaves the chain's controller permanently unmanageable once the
+        // handover lands.
+        for (uint256 i = 0; i < _chain.members.length; i++) {
+            require(
+                _chain.members[i] != address(0),
+                "governance roster contains the zero address: quorum would be unreachable"
+            );
+        }
 
         PluginRepo repo = PluginRepo(_chain.multisigRepo);
         PluginRepo.Version memory version = repo.getLatestVersion(repo.latestRelease());
@@ -736,9 +875,7 @@ abstract contract CrossChainDeploy is Script {
         require(_chain.governors.length > 0, "DAO has no governor: nothing could act as it after handover");
         for (uint256 i = 0; i < _chain.governors.length; i++) {
             require(
-                DAO(payable(_chain.dao)).hasPermission(
-                    _chain.dao, _chain.governors[i], EXECUTE_PERMISSION_ID, ""
-                ),
+                DAO(payable(_chain.dao)).hasPermission(_chain.dao, _chain.governors[i], EXECUTE_PERMISSION_ID, ""),
                 "declared governor cannot execute as the DAO"
             );
         }
@@ -769,9 +906,7 @@ abstract contract CrossChainDeploy is Script {
         _assertGovernable(_chain);
 
         _broadcast();
-        _daoAction(
-            _chain, abi.encodeCall(PermissionManager.revoke, (_chain.dao, deployer, EXECUTE_PERMISSION_ID))
-        );
+        _daoAction(_chain, abi.encodeCall(PermissionManager.revoke, (_chain.dao, deployer, EXECUTE_PERMISSION_ID)));
         vm.stopBroadcast();
         console.log("[6] deployer EXECUTE revoked on", _chain.chainId);
     }

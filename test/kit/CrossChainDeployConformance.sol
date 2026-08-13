@@ -128,9 +128,8 @@ abstract contract CrossChainDeployConformance is Test {
     /// @dev Proves the installation was applied rather than merely prepared.
     function assertDaoCanConfigureItsController(Deployed memory _c) internal view {
         assertTrue(
-            DAO(payable(_c.dao)).hasPermission(
-                _c.controller, _c.dao, Permissions.MANAGE_CONTROLLER_CONFIG_PERMISSION_ID, ""
-            ),
+            DAO(payable(_c.dao))
+                .hasPermission(_c.controller, _c.dao, Permissions.MANAGE_CONTROLLER_CONFIG_PERMISSION_ID, ""),
             "conformance: the installation was never applied"
         );
     }

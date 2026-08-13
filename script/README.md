@@ -20,8 +20,9 @@ DEPLOY_CONFIG=deploy/my-dao.json \
     "rpc": "mainnet",                    // a foundry.toml alias or a URL
     "daoFactory": "0x…", "psp": "0x…", "pluginRepoFactory": "0x…",
     "crossChainRepo": "0x…",             // the CrossChainController PluginRepo
-    "multisigRepo": "0x…",               // only if you use the default governance
-    "ccipRouter": "0x…", "ccipFeeToken": "",   // empty = the chain's native currency
+    "multisigRepo": "0x…",               // the zero address if you override _configureSatellite
+    "ccipRouter": "0x…",
+    "ccipFeeToken": "0x0000000000000000000000000000000000000000",  // zero = native currency
     "dao": { "subdomain": "my-dao", "metadata": "ipfs://…" },
     "governance": { "members": ["0x…", "0x…"], "minApprovals": 2 }
   },
@@ -30,6 +31,14 @@ DEPLOY_CONFIG=deploy/my-dao.json \
   "minFailedMessageGas": 45000
 }
 ```
+
+**Every key above is required on every chain, including the ones you do not use.**
+The loader reads scalars one path at a time and does not probe for absence, so a
+missing key fails with `path ".hub.multisigRepo" must return exactly one JSON
+value` rather than defaulting. Write the zero address for `multisigRepo` and
+`ccipFeeToken` when they do not apply, and give every chain a `governance` block
+even where a hook installs something else — the roster is read before the hook
+runs. All of these fail loudly before anything is broadcast.
 
 Add a read grant for wherever you keep it — `fs_permissions` is per-project and
 does not travel with this submodule:
@@ -57,8 +66,14 @@ contract Deploy is CrossChainDeploy {
 ```
 
 Available inside a hook: `_installPlugin`, `_publishRepo`, `_grantExecute`,
-`_grantRoot`, `_revokeRoot`, `_addGovernor`, and `_installMultisigGovernance` if
-you want the default on the hub too.
+`_revokeExecute`, `_grantRoot`, `_revokeRoot`, `_addGovernor`, and
+`_installMultisigGovernance` if you want the default on the hub too.
+
+A hook that grants `EXECUTE` to a temporary helper **must revoke it**. Nothing
+else will: `_assertGovernable` proves the declared governors *can* act, never
+that nothing else can, and the handover only takes the permission back from the
+deployer. Alchemix's Factory is the worked example — granted, called, revoked,
+all before the hook returns.
 
 DAO creation is not among them, deliberately. The kit has already created every
 DAO by the time a hook runs, which is what makes "the deployer can act as this
@@ -92,9 +107,14 @@ property holds. These live in non-virtual code:
 
 | invariant | the failure it prevents |
 |---|---|
-| every DAO ends governable | the controller grants `MANAGE_CONTROLLER_CONFIG`, `CANCEL_MESSAGE`, `SWEEP`, `PAUSE`, `UNPAUSE` and `UPGRADE_PLUGIN` to the DAO **and nobody else**. A DAO nothing can act as means a wrong lane, a stranded message and an upstream security fix are permanently out of reach |
+| the signing account is the one that gets revoked | forge only fills the script sender from `--private-key`; under `--account`/`--ledger` it stays at its own default while a different wallet signs. The kit refuses to guess, then reads the `EXECUTE` grant back off each DAO before continuing. Guessing wrong means the handover revokes an address that holds nothing and the real signer keeps unconditional `EXECUTE` on every DAO, permanently |
+| every DAO ends governable | the controller grants `MANAGE_CONTROLLER_CONFIG`, `CANCEL_MESSAGE`, `SWEEP`, `PAUSE`, `UNPAUSE`, `FORWARD_MESSAGE` and `UPGRADE_PLUGIN` to the DAO **and nobody else**. A DAO nothing can act as means a wrong lane, a stranded message, an unsendable veto and an upstream security fix are all permanently out of reach |
+| a declared governor is neither `address(0)` nor the deployer | OSx reports a grant against the zero address, and the deployer's `EXECUTE` is revoked by the very next phase — either would let the governability proof pass on a DAO that ends up frozen |
+| no roster entry is `address(0)` | `Addresslist` counts a zero toward the threshold without adding a signer, so `2`-of-`["0xAlice", "0x0"]` installs cleanly, reads as governed, and can never reach quorum |
 | the executor is never the DAO | otherwise any inbound message clearing the adapter executes with full DAO authority |
-| no controller holds a permission on its DAO | same, checked from the other side |
+| no controller holds a permission on its DAO | same, from the other side. Prevented by construction rather than checked: the setup is given `address(0)` for the executor slot, which is what makes it mint a dedicated one |
+| every adapter trusts the remote CONTROLLER | read back off both adapters after routing. `trustedRemote` is constructor-only with no setter, so a lane wired to a DAO, or to the remote adapter instead of its controller, deploys quietly and then reverts every inbound message — and repair needs new adapters on both chains after the deployer's authority is gone |
+| every adapter can map the chain ids it serves | asked of the deployed bytecode, not of the two hand-maintained lists that decide which adapter class to construct. A chain absent from the table gets an adapter that reverts `UNKNOWN_CHAIN_ID` on every send |
 | the PSP never keeps `ROOT` | it needs `ROOT` for one transaction; longer is a second unconditional authority |
 | every fork is the chain config claims | an adapter's trusted remote is fixed at construction, so a wrong RPC is permanent |
 | adapters only after every controller exists | an adapter names the controller on the other side |
@@ -116,8 +136,16 @@ assertLaneWired(hub.controller, satelliteChainId, hub.adapter, satellite.adapter
 **Signing.** Three ways in, in precedence order:
 
 1. `PRIVATE_KEY` in the environment
-2. `--account <keystore>` or `--ledger`
+2. `--account <keystore>` or `--ledger` — **also pass `--sender <that wallet's address>`**
 3. `--private-key 0x…` on the command line
+
+That `--sender` is not optional, and the kit will stop without it. Forge only
+populates the script's own sender from `--private-key`; with `--account` or
+`--ledger` it stays at foundry's default `0x1804c8AB…` while an entirely
+different wallet signs every transaction. A kit that believed the default would
+create DAOs owned by the real signer and then revoke `EXECUTE` from an address
+that never had it — silently, with a success message — leaving the signing EOA
+in permanent unconditional control of every DAO in the topology.
 
 A keystore or hardware wallet is the better habit — a plaintext key in the
 environment is readable by anything running as you, and leaves no record of which

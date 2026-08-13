@@ -18,6 +18,12 @@ fs_permissions = [
     { access = "read", path = "./test/kit/fixtures" },
 ]
 
+# CI sets `FOUNDRY_PROFILE: ci`. Without a section to select, forge falls back to
+# `default` today but hard-errors on an unknown profile from 1.6 on, which would
+# break every job on the next toolchain bump. Declared explicitly, inheriting
+# `default`, so the name resolves to something real.
+[profile.ci]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
 
 [fmt]
