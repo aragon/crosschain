@@ -291,9 +291,21 @@ abstract contract CrossChainDeploy is Script {
     ///      Reading the grant back settles it against on-chain state instead of
     ///      against a guess about how forge resolved a flag. Two views cost
     ///      nothing and this aborts before any authority has been handed out.
+    ///      The two callers fail for different reasons and need different
+    ///      remedies, so the sentence is a parameter. On a DAO the KIT created
+    ///      the grant is automatic, so a mismatch means the resolved signer is
+    ///      not the signing one — a `--sender` problem. On the CONSUMER's hub
+    ///      DAO there is no automatic grant at all, so the same reading most
+    ///      likely means nobody granted it, or it was revoked before the kit
+    ///      ran. Sending that consumer to debug `--sender` points them at the
+    ///      wrong thing entirely.
+    function _assertDeployerBootstrapped(ChainCfg storage _chain, string memory _remedy) private view {
+        require(DAO(payable(_chain.dao)).hasPermission(_chain.dao, deployer, EXECUTE_PERMISSION_ID, ""), _remedy);
+    }
+
     function _assertDeployerBootstrapped(ChainCfg storage _chain) private view {
-        require(
-            DAO(payable(_chain.dao)).hasPermission(_chain.dao, deployer, EXECUTE_PERMISSION_ID, ""),
+        _assertDeployerBootstrapped(
+            _chain,
             "the resolved deployer does not hold EXECUTE on the DAO it just created: the signing account differs from the resolved one, so the handover would revoke nothing. Pass --sender <the signing address>, or set PRIVATE_KEY."
         );
     }
@@ -1163,7 +1175,10 @@ abstract contract CrossChainDeploy is Script {
             hub.dao.code.length > 0,
             "hub.dao has no code on the hub chain: it was created on another fork, or not at all"
         );
-        _assertDeployerBootstrapped(hub);
+        _assertDeployerBootstrapped(
+            hub,
+            "the deployer cannot act as the hub DAO: grant it EXECUTE on the DAO before calling the kit, and do not revoke until installCrosschain() has run"
+        );
         // `_applyController`'s first action is a `grant` executed AS the DAO,
         // and `PermissionManager.grant` is `auth(ROOT)`. Every `DAOFactory` DAO
         // holds ROOT on itself, but the premise of these checks is not trusting

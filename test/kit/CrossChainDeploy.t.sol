@@ -619,9 +619,12 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         vm.prank(address(dao));
         dao.revoke(address(dao), vm.addr(DEPLOYER_KEY), executeId);
 
+        // The HUB message, deliberately not the kit-created one. On a DAO the
+        // consumer made there is no automatic grant to have gone wrong, so
+        // `--sender` advice would send them to debug the wrong thing.
         vm.expectRevert(
             bytes(
-                "the resolved deployer does not hold EXECUTE on the DAO it just created: the signing account differs from the resolved one, so the handover would revoke nothing. Pass --sender <the signing address>, or set PRIVATE_KEY."
+                "the deployer cannot act as the hub DAO: grant it EXECUTE on the DAO before calling the kit, and do not revoke until installCrosschain() has run"
             )
         );
         kit.installCrosschain();
