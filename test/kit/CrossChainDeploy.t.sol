@@ -15,6 +15,14 @@ import { Executor } from "@src/Executor.sol";
 import { Permissions } from "@src/lib/Permissions.sol";
 import { CrossChainDeployConformance, Deployed } from "./CrossChainDeployConformance.sol";
 
+/// @dev The two `Addresslist` reads the zero-address evidence test needs.
+///      Declared locally rather than imported so the test does not depend on
+///      OSx's internal file layout.
+interface Addresslist {
+    function addresslistLength() external view returns (uint256);
+    function isListed(address account) external view returns (bool);
+}
+
 /// @notice Fills the topology from values the test sets, and governs the hub
 ///         with the kit's own Multisig installer.
 /// @dev Only the two seams a real consumer uses are overridden. Everything the
@@ -170,6 +178,29 @@ contract KitHarness is CrossChainDeploy {
 
     function installSatelliteGovernance(uint256 _i) external {
         _installMultisigGovernance(satellites[_i]);
+    }
+
+    /// @dev Installs the Multisig with a chosen roster, BYPASSING the kit's own
+    ///      validation, so a test can observe what OSx does with input the kit
+    ///      refuses. Never a production path.
+    function installMultisigUnchecked(uint256 _i, address[] memory _members, uint16 _minApprovals)
+        external
+        returns (address plugin)
+    {
+        ChainCfg storage c = satellites[_i];
+        PluginRepo repo = PluginRepo(c.multisigRepo);
+        PluginRepo.Version memory version = repo.getLatestVersion(repo.latestRelease());
+
+        bytes memory data = abi.encode(
+            _members,
+            MultisigSettings({ onlyListed: true, minApprovals: _minApprovals }),
+            TargetConfig({ target: address(0), operation: 0 }),
+            bytes("")
+        );
+
+        _broadcast();
+        (plugin,) = _installPlugin(c, repo, version.tag, data);
+        vm.stopBroadcast();
     }
 }
 
@@ -498,5 +529,42 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
 
         vm.expectRevert(bytes("governance roster contains the zero address: quorum would be unreachable"));
         kit.installSatelliteGovernance(0);
+    }
+
+    /// @notice Why the guard above has to exist here, and not upstream.
+    /// @dev The obvious objection to that guard is that `address(0)` should
+    ///      already be rejected by OSx. It is not, and this is the evidence
+    ///      rather than an argument: installing 2-of-[Alice, 0x0] through the
+    ///      REAL published Multisig on a real chain succeeds.
+    ///
+    ///      `Addresslist._addAddresses` checks `isListed` and nothing else, and
+    ///      neither `Multisig.initialize` nor `addAddresses` adds a zero check on
+    ///      top. So the zero is marked listed, counts toward
+    ///      `addresslistLength`, and lifts the threshold that
+    ///      `minApprovals <= members.length` then validates against — while
+    ///      adding no one who can ever approve.
+    ///
+    ///      The result reads as governed from every angle the kit could
+    ///      otherwise check: the plugin exists, holds EXECUTE, and
+    ///      `_assertGovernable` passes. It simply cannot pass a proposal.
+    function test_osxItselfAcceptsAZeroAddressInAMultisigRoster() public {
+        kit.phasesUpToHandover(DEPLOYER_KEY);
+        kit.selectSatellite(0);
+
+        address[] memory poisoned = new address[](2);
+        poisoned[0] = address(0xA11CE);
+        poisoned[1] = address(0);
+
+        address plugin = kit.installMultisigUnchecked(0, poisoned, 2);
+
+        assertEq(Addresslist(plugin).addresslistLength(), 2, "OSx counted the zero toward the roster");
+        assertTrue(Addresslist(plugin).isListed(address(0)), "OSx listed the zero address as a signer");
+        assertFalse(
+            Addresslist(plugin).isListed(address(0xBEEF)), "sanity: isListed is not answering true for anything"
+        );
+
+        // One real signer against a threshold of two: unreachable by arithmetic,
+        // and nothing on chain reports a problem.
+        assertTrue(Addresslist(plugin).isListed(address(0xA11CE)), "the one real signer");
     }
 }
