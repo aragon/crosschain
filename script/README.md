@@ -220,6 +220,19 @@ The sharp edge is the precedence: a stale `PRIVATE_KEY` in your shell silently
 beats `--account`. The kit cannot see which flags forge got, so it prints the
 resolved signer and its source before broadcasting anything. Read that line.
 
+**First, the case that almost certainly applies to you: nothing was broadcast.**
+Both kit calls run inside ONE `forge script` invocation, and forge pre-simulates
+every recorded transaction on every chain against real chain state *before*
+sending anything on any chain, aborting the whole multi-chain run on the first
+revert. So a **deterministic** failure — a bad config value, a `require` on a
+JSON number, a precondition — leaves **zero transactions on every chain**, no
+subdomain burned and nothing to recover. Fix the input and run again. Verified on
+two anvils with a positive control; the run that reverts leaves `A=0 B=0`, the
+same run without the revert leaves `A=1 B=1`.
+
+Recovery below is for the narrow case the pre-flight cannot catch: chain state
+that diverges *between* pre-flight and mining.
+
 **A dead process between the two calls is NOT "just re-run the script".** The
 prepared install lives in script storage and the kit writes no files, so a fresh
 process knows nothing of it — re-invoking re-runs `setUpCrosschain()` from zero,
@@ -231,9 +244,33 @@ process exits.) The real recovery paths, in order of preference:
 
 1. **`forge script --resume`** — the apply calldata is already in `broadcast/`,
    and replaying it is exactly the retry the atomic revert made safe.
+
+   **`--multi` is required and is easy to omit.** The kit broadcasts to more than
+   one chain, so the artifact lives under `broadcast/multi/`, and a resume
+   without `--multi` looks for a single-chain artifact and reports nothing to
+   resume. You also still need the signer flags — `--resume` replays recorded
+   calldata, it does not remember who signed:
+
+   ```bash
+   forge script script/Deploy.s.sol --resume --multi --private-key $PRIVATE_KEY
+   ```
+
 2. **A manual apply** built from the PSP's `InstallationPrepared` event: the
    plugin and version tag are in the event, `executor` is readable off the
    prepared proxy, and the permission set is deterministic in `(dao, plugin)`.
+
+   Two steps are easy to miss, and the apply reverts without them. **The DAO must
+   hold `ROOT` on itself and must grant `ROOT` to the PSP for the duration of the
+   call** — `applyInstallation` writes permissions, which OSx gates on `ROOT`, and
+   the kit's own `_applyController` bundles grant-PSP / apply / revoke-PSP into a
+   single `DAO.execute` for exactly this reason. Rebuild that three-action bundle,
+   do not call `applyInstallation` bare.
+
+   Note also that an abandoned prepare **never expires**: `validatePreparedSetupId`
+   only compares block numbers within its own `(dao, plugin)` pair, so an old
+   prepare stays applicable indefinitely. If you prepared twice, be certain which
+   one you are applying.
+
 3. **A full restart with fresh subdomains.** ENS subdomains are claimed once per
    registrar and never released, so the failed run's DAOs and their names are
    abandoned, not reused — bump `dao.subdomain` or `createDao` reverts

@@ -188,6 +188,31 @@ abstract contract CrossChainDeploy is Script {
         }
     }
 
+    /// @dev Fails loudly when a DAO-acting helper is invoked while the wrong
+    ///      fork is selected.
+    ///
+    ///      The helpers below must run inside an active broadcast, and
+    ///      `vm.selectFork` reverts during one, so they cannot select for
+    ///      themselves -- the caller owns that, and gets no reminder. Without
+    ///      this check the failure is silent rather than loud: `_chain.dao` is
+    ///      an address, addresses exist on every chain, and OSx contracts
+    ///      collide across testnets by construction (sepolia and
+    ///      arbitrum-sepolia share a PSP). A grant meant for the hub lands on a
+    ///      satellite, nothing reverts, and `_assertGovernable(hub)` still
+    ///      passes because it reads the same wrong fork.
+    ///
+    ///      This is a non-local property: whether a helper is correct depends
+    ///      on what ran before it. `setUpCrosschain()` exits on the LAST
+    ///      SATELLITE's fork, and `_report()` is `virtual` -- an override that
+    ///      touches a satellite moves the selection out from under whatever the
+    ///      consumer calls next.
+    function _requireOnFork(ChainCfg storage _chain) private view {
+        require(
+            block.chainid == _chain.chainId,
+            "wrong fork selected for this chain: call _select(<chain>) before the helper, and before _broadcast() -- vm.selectFork reverts inside an active broadcast"
+        );
+    }
+
     /// @notice How many chains this deployment spans, hub included.
     function chainCount() public view returns (uint256) {
         return satellites.length + 1;
@@ -350,6 +375,7 @@ abstract contract CrossChainDeploy is Script {
         internal
         returns (address plugin, address[] memory helpers)
     {
+        _requireOnFork(_chain);
         PluginSetupRef memory ref = PluginSetupRef({ versionTag: _tag, pluginSetupRepo: _repo });
 
         IPluginSetup.PreparedSetupData memory prepared;
@@ -418,6 +444,7 @@ abstract contract CrossChainDeploy is Script {
         internal
         returns (PluginRepo)
     {
+        _requireOnFork(_chain);
         require(_chain.dao != address(0), "publish a repo after the DAOs exist: the DAO is the maintainer");
         return PluginRepoFactory(_chain.pluginRepoFactory)
             .createPluginRepoWithFirstVersion("", _setup, _chain.dao, _releaseMetadata, _buildMetadata);
@@ -441,6 +468,15 @@ abstract contract CrossChainDeploy is Script {
         _daoAction(_chain, abi.encodeCall(PermissionManager.revoke, (_chain.dao, _who, EXECUTE_PERMISSION_ID)));
     }
 
+    /// @notice Gives `_who` `ROOT` on the chain's DAO.
+    /// @dev Strictly more dangerous than {_grantExecute}, and the pairing matters
+    ///      more: `ROOT` is the permission that can grant every other permission,
+    ///      including `EXECUTE` to itself, at any time in the future. The
+    ///      handover revokes the DEPLOYER's `ROOT` (see {_revokeDeployer}) but
+    ///      nobody else's, and `_assertGovernable` will not notice a leftover --
+    ///      it checks the declared governors CAN execute, not that nothing else
+    ///      can. If a hook grants `ROOT` to a helper, that hook owns pairing it
+    ///      with {_revokeRoot} before the handover.
     function _grantRoot(ChainCfg storage _chain, address _who) internal {
         _daoAction(_chain, abi.encodeCall(PermissionManager.grant, (_chain.dao, _who, ROOT_PERMISSION_ID)));
     }
@@ -459,6 +495,7 @@ abstract contract CrossChainDeploy is Script {
     ///      DAO acts on something else — `updateConfig` on the controller, say —
     ///      which is not the same thing as acting on itself.
     function _daoActionTo(ChainCfg storage _chain, address _target, bytes memory _data) private {
+        _requireOnFork(_chain);
         Action[] memory actions = new Action[](1);
         actions[0].to = _target;
         actions[0].data = _data;
@@ -788,18 +825,31 @@ abstract contract CrossChainDeploy is Script {
         returns (address)
     {
         // CREATE2, and this is not a preference. `forge script` runs the
-        // deployer's nonce as ONE counter across every fork -- measured: chain A
-        // gets 0, 2, 6, chain B gets 1, 4, 7 -- while the broadcast replay
-        // executes each chain's transactions against that chain's OWN nonce,
-        // which starts wherever the real chain is. So a plain `new` produces an
-        // address in-script that the replay never reproduces, and the
-        // `updateConfig` that references it fails `HAS_NO_CODE` on a deployment
-        // that is otherwise correct.
+        // deployer's nonce as ONE counter across every fork. THAT MECHANISM DID
+        // NOT REPRODUCE when re-measured on 2026-08-18 (four forge versions,
+        // three configs): per-fork nonces were correct in BOTH simulation and
+        // replay, and every simulated address matched its broadcast address.
+        // Two live broadcasts agree -- addresses came out byte-identical to
+        // simulation, one of them across a change of signing account.
         //
-        // Only contracts the SCRIPT deploys are affected. The DAO and the
-        // controller proxy are CREATE'd by the `DAOFactory` and the PSP, whose
-        // nonces are real per-chain state and replay identically -- which is
-        // why the adapters were the only casualty.
+        // So the original diagnosis of the bug this guards against is wrong,
+        // and the true root cause is NOT recorded. Do not treat the paragraph
+        // above as an explanation; treat CREATE2 as load-bearing for reasons
+        // that ARE measured, below.
+        //
+        // What is confirmed: an address derived from a DEPLOYER NONCE is not
+        // stable, because that nonce moves for reasons outside this script --
+        // a re-sent stuck transaction, a stray funding send, a second script,
+        // a concurrent run sharing the key. Measured 2026-08-18: a consumer
+        // whose nine plain `new` deployments bound to nonces 0x1-0xe aborted
+        // with `InvalidPluginSetupInterface()` after another run consumed
+        // 0x0-0x7 with the same key.
+        //
+        // Separately, addresses CREATE'd by shared singletons -- the
+        // `DAOFactory` and the PSP -- move when ANY third party uses them,
+        // since `prepareInstallation` is permissionless. Those are not
+        // script-controlled either. The adapters are the part this kit CAN
+        // make deterministic, and CREATE2 is how.
         //
         // CREATE2 removes the nonce from the address entirely. The salt binds
         // the chain and the controller, so a re-run after a failed deployment
@@ -930,6 +980,7 @@ abstract contract CrossChainDeploy is Script {
     ///      pointed at, rather than only for the one the tests happen to use.
     ///      `_assertGovernable` is the real backstop either way.
     function _installMultisigGovernance(ChainCfg storage _chain) internal {
+        _requireOnFork(_chain);
         require(_chain.multisigRepo != address(0), "multisigRepo missing: needed by the default governance");
         require(_chain.members.length > 0, "governance roster is empty");
         require(_chain.minApprovals > 0, "minApprovals must be at least 1");
@@ -1057,9 +1108,20 @@ abstract contract CrossChainDeploy is Script {
         _assertGovernable(_chain);
 
         _broadcast();
+        // ROOT FIRST, EXECUTE SECOND, and the order is load-bearing: `_daoAction`
+        // works by calling `DAO.execute` AS the deployer, which OSx gates on
+        // EXECUTE. Revoking EXECUTE first makes every later action in this
+        // broadcast unauthorized -- including this one.
+        //
+        // Belt and braces against the authority EXECUTE alone does not cover.
+        // `_requireActionableHub` refuses a deployer that already holds ROOT, but
+        // a hook can grant it mid-run via `_grantRoot` and forget to pair it, and
+        // satellites do not go through that precondition at all. OSx `_revoke`
+        // no-ops when the permission is unset, so this costs nothing when clean.
+        _daoAction(_chain, abi.encodeCall(PermissionManager.revoke, (_chain.dao, deployer, ROOT_PERMISSION_ID)));
         _daoAction(_chain, abi.encodeCall(PermissionManager.revoke, (_chain.dao, deployer, EXECUTE_PERMISSION_ID)));
         vm.stopBroadcast();
-        console.log("[6] deployer EXECUTE revoked on", _chain.chainId);
+        console.log("[6] deployer EXECUTE and ROOT revoked on", _chain.chainId);
     }
 
     // -------------------------------------------------------------------------
@@ -1186,6 +1248,18 @@ abstract contract CrossChainDeploy is Script {
         require(
             DAO(payable(hub.dao)).hasPermission(hub.dao, hub.dao, ROOT_PERMISSION_ID, ""),
             "the hub DAO does not hold ROOT on itself: the kit acts BY executing grants as the DAO, which OSx gates on ROOT"
+        );
+        // The handover revokes EXECUTE and nothing else, so a deployer that also
+        // holds ROOT keeps the authority to grant EXECUTE straight back to
+        // itself once the run is over -- permanently, bypassing whatever
+        // governance was just installed. `DAOFactory` DAOs cannot reach this
+        // state (the factory revokes its own ROOT and grants the caller only
+        // EXECUTE), but a DAO built by calling `DAO.initialize` directly leaves
+        // ROOT with `_initialOwner`, and the message above tells that operator
+        // to grant the DAO ROOT on itself without ever saying "and drop yours".
+        require(
+            !DAO(payable(hub.dao)).hasPermission(hub.dao, deployer, ROOT_PERMISSION_ID, ""),
+            "the deployer holds ROOT on the hub DAO: the handover only revokes EXECUTE, so it could re-grant itself EXECUTE afterwards and bypass the governance being installed. Revoke the deployer's ROOT before calling the kit"
         );
     }
 

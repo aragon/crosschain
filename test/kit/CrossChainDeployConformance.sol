@@ -49,9 +49,9 @@ abstract contract CrossChainDeployConformance is Test {
     ///         while that chain is selected.
     function assertSatelliteConformant(Deployed memory _c, address _psp, address _deployer) internal view {
         assertArtefactsExist(_c);
-        assertNoEoaCanExecute(_c, _deployer);
+        assertDeployerCannotExecute(_c, _deployer);
         assertGovernorsCanExecute(_c);
-        assertControllerHoldsNothingOnItsDao(_c);
+        assertControllerCannotExecuteAsItsDao(_c);
         assertDedicatedExecutor(_c);
         assertPspReturnedRoot(_c, _psp);
         assertDaoCanConfigureItsController(_c);
@@ -68,7 +68,7 @@ abstract contract CrossChainDeployConformance is Test {
     ///      hub's lanes are per-satellite, so pair this with `assertLaneWired`.
     function assertHubConformant(Deployed memory _c, address _psp) internal view {
         assertArtefactsExist(_c);
-        assertControllerHoldsNothingOnItsDao(_c);
+        assertControllerCannotExecuteAsItsDao(_c);
         assertDedicatedExecutor(_c);
         assertPspReturnedRoot(_c, _psp);
         assertDaoCanConfigureItsController(_c);
@@ -86,7 +86,13 @@ abstract contract CrossChainDeployConformance is Test {
 
     /// @dev Prevents: the deploying key keeping permanent unconditional
     ///      authority over a live DAO, bypassing its governance entirely.
-    function assertNoEoaCanExecute(Deployed memory _c, address _deployer) internal view {
+    /// @dev Checks exactly ONE address -- the deployer -- and the name now says
+    ///      so. The previous name (`assertNoEoaCanExecute`) stated a universal
+    ///      property this cannot verify: a consumer overriding the `virtual`
+    ///      `_configureSatellite` chooses who gets `EXECUTE` on a kit-created
+    ///      satellite DAO, and any stray EOA among them passes this untouched.
+    ///      If you need the universal property, sweep your own list.
+    function assertDeployerCannotExecute(Deployed memory _c, address _deployer) internal view {
         DAO dao = DAO(payable(_c.dao));
         assertFalse(
             dao.hasPermission(_c.dao, _deployer, dao.EXECUTE_PERMISSION_ID(), ""),
@@ -113,7 +119,13 @@ abstract contract CrossChainDeployConformance is Test {
     /// @dev Prevents: an inbound cross-chain message executing with full DAO
     ///      authority. If the controller holds EXECUTE on its DAO, anything that
     ///      clears the adapter can do anything the DAO can.
-    function assertControllerHoldsNothingOnItsDao(Deployed memory _c) internal view {
+    /// @dev Checks `EXECUTE` only. The previous name
+    ///      (`assertControllerHoldsNothingOnItsDao`) claimed more than the body
+    ///      does: a controller granted `ROOT` on its own DAO passes this, and
+    ///      `ROOT` is strictly worse -- it can grant itself `EXECUTE` at will.
+    ///      The real defence is construction, not this assertion: the setup is
+    ///      handed `address(0)` for the executor slot.
+    function assertControllerCannotExecuteAsItsDao(Deployed memory _c) internal view {
         DAO dao = DAO(payable(_c.dao));
         assertFalse(
             dao.hasPermission(_c.dao, _c.controller, dao.EXECUTE_PERMISSION_ID(), ""),

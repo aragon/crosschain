@@ -119,6 +119,14 @@ contract KitHarness is CrossChainDeploy {
         _handOverHub();
     }
 
+    /// @dev Drives a DAO-acting helper against the hub from outside, so a test
+    ///      can invoke it while a different fork is selected.
+    function grantExecuteOnHub(address _who) external {
+        _broadcast();
+        _grantExecute(hub, _who);
+        vm.stopBroadcast();
+    }
+
     function selectHub() external {
         _select(hub);
     }
@@ -654,6 +662,98 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         kit.installCrosschain();
     }
 
+    /// @notice A deployer holding ROOT is refused: the handover revokes only
+    ///         EXECUTE, so it could grant itself EXECUTE back afterwards.
+    /// @dev The reachable path is a consumer that built its hub DAO by calling
+    ///      `DAO.initialize` directly rather than through `DAOFactory` --
+    ///      `_initializePermissionManager` leaves ROOT with `_initialOwner` and
+    ///      nothing revokes it. Simulated here by granting it, because the
+    ///      fixture necessarily uses the factory.
+    function test_installRefusesADeployerHoldingRoot() public {
+        kit.initCrosschain(DEPLOYER_KEY);
+        kit.createHubDao();
+        kit.setUpCrosschain();
+
+        kit.selectHub();
+        DAO dao = DAO(payable(kit.hubCfg().dao));
+        bytes32 rootId = dao.ROOT_PERMISSION_ID();
+        vm.prank(address(dao));
+        dao.grant(address(dao), vm.addr(DEPLOYER_KEY), rootId);
+
+        vm.expectRevert(
+            bytes(
+                "the deployer holds ROOT on the hub DAO: the handover only revokes EXECUTE, so it could re-grant itself EXECUTE afterwards and bypass the governance being installed. Revoke the deployer's ROOT before calling the kit"
+            )
+        );
+        kit.installCrosschain();
+    }
+
+    /// @notice The handover must strip ROOT as well as EXECUTE, so a leftover
+    ///         grant from a hook cannot outlive the run.
+    /// @dev This is the second half of the same defect: the precondition above
+    ///      only guards the hub's entry, and a hook can call `_grantRoot`
+    ///      mid-run. Without the paired revoke the deployer keeps the authority
+    ///      to re-grant itself EXECUTE forever, and conformance stays green
+    ///      because it only ever looks at EXECUTE.
+    function test_handoverRevokesRootAsWellAsExecute() public {
+        _runThroughInstall();
+        kit.installHubGovernance();
+
+        kit.selectHub();
+        DAO dao = DAO(payable(kit.hubCfg().dao));
+        bytes32 rootId = dao.ROOT_PERMISSION_ID();
+        address dep = vm.addr(DEPLOYER_KEY);
+
+        // Stand in for a hook that granted ROOT and forgot to pair it.
+        vm.prank(address(dao));
+        dao.grant(address(dao), dep, rootId);
+        assertTrue(dao.hasPermission(address(dao), dep, rootId, ""), "setup: deployer should hold ROOT");
+
+        kit.handOverHub();
+
+        assertFalse(dao.hasPermission(address(dao), dep, rootId, ""), "handover left ROOT with the deployer");
+        assertFalse(
+            dao.hasPermission(address(dao), dep, dao.EXECUTE_PERMISSION_ID(), ""),
+            "handover left EXECUTE with the deployer"
+        );
+    }
+
+    /// @notice A DAO-acting helper invoked on the wrong fork must refuse by
+    ///         name instead of silently writing to the wrong chain.
+    /// @dev The helpers run inside an active broadcast and `vm.selectFork`
+    ///      reverts during one, so they cannot select for themselves. Their
+    ///      correctness is therefore a property of what ran BEFORE them --
+    ///      `setUpCrosschain()` exits on the last satellite's fork, and the
+    ///      `virtual` `_report()` can move the selection under a consumer.
+    ///      Without the guard nothing reverts: addresses exist on every chain,
+    ///      and OSx contracts genuinely collide across testnets.
+    function test_daoHelperRefusesOnTheWrongFork() public {
+        kit.initCrosschain(DEPLOYER_KEY);
+        kit.createHubDao();
+        kit.setUpCrosschain();
+
+        // Stand on the satellite, then act on the HUB config: the exact shape a
+        // consumer hits when it calls a helper after setUpCrosschain().
+        kit.selectSatellite(0);
+
+        // Put code at the hub DAO's address on THIS fork. Without it foundry
+        // stops the call itself with "does not exist on active fork", which is
+        // not the hazard: OSx addresses genuinely collide across testnets
+        // (sepolia and arbitrum-sepolia share a PSP), and where they collide
+        // the call succeeds against the wrong chain and nothing reverts. This
+        // makes the fixture reproduce THAT case, so the guard is what fails the
+        // test rather than a missing-contract accident.
+        address hubDao = kit.hubCfg().dao;
+        vm.etch(hubDao, address(new AlwaysAccepts()).code);
+
+        vm.expectRevert(
+            bytes(
+                "wrong fork selected for this chain: call _select(<chain>) before the helper, and before _broadcast() -- vm.selectFork reverts inside an active broadcast"
+            )
+        );
+        kit.grantExecuteOnHub(address(0xBEEF));
+    }
+
     /// @notice A second `installCrosschain()` must be told apart from the
     ///         first: OSx would also refuse it, but deep inside the PSP with a
     ///         setup id, after the preconditions all passed.
@@ -761,4 +861,10 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         // and nothing on chain reports a problem.
         assertTrue(Addresslist(plugin).isListed(address(0xA11CE)), "the one real signer");
     }
+}
+
+/// @dev Stands in for a real contract living at the same address on another
+///      chain — the collision case that makes a wrong-fork write silent.
+contract AlwaysAccepts {
+    fallback() external payable { }
 }
