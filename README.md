@@ -129,6 +129,20 @@ There are two separate pots.
 (`address(0)` means native currency) and use `quoteFee` to check the required amount
 against what is held. `sweep` moves the funds back out.
 
+`quoteFee` returns **three** values — `(address feeToken, uint256 fee, uint256 available)` —
+and the third is what the controller currently holds, so the comparison is `fee` against
+`available`. Quote it with the full return signature:
+
+```sh
+cast call <controller> \
+  "quoteFee(uint256,uint256,bytes)(address,uint256,uint256)" \
+  <destChainId> <gasLimit> <encodedActions> --rpc-url <rpc>
+```
+
+Naming a shorter return list does not error: ABI decoding takes the leading words and drops
+the rest, so a single-return signature reads the fee token — `0` for native — which looks
+exactly like a quote of zero. An operator sizing a fee budget reads "free" and funds nothing.
+
 **The executor** pays for the actions themselves. Messages carry instructions, never funds,
 so whatever an action spends must be available when it runs — normally by pre-funding the
 executor. An underfunded action is captured as `Delivered` and can be retried once funded.

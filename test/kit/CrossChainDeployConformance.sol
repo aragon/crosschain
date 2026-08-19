@@ -111,7 +111,7 @@ abstract contract CrossChainDeployConformance is Test {
         for (uint256 i = 0; i < _c.governors.length; i++) {
             assertTrue(
                 dao.hasPermission(_c.dao, _c.governors[i], dao.EXECUTE_PERMISSION_ID(), ""),
-                "conformance: a declared governor cannot execute as the DAO"
+                "conformance: a declared governor cannot execute as the DAO (a conditional grant reads as absent: the probe passes empty calldata)"
             );
         }
     }

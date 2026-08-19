@@ -632,7 +632,7 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         // `--sender` advice would send them to debug the wrong thing.
         vm.expectRevert(
             bytes(
-                "the deployer cannot act as the hub DAO: grant it EXECUTE on the DAO before calling the kit, and do not revoke until installCrosschain() has run"
+                "the deployer cannot act as the hub DAO: grant it EXECUTE on the DAO before calling the kit, and do not revoke until installCrosschain() has run. A CONDITIONAL grant reads as absent here -- the probe passes empty calldata -- so the deployer's grant must be unconditional"
             )
         );
         kit.installCrosschain();

@@ -1056,7 +1056,7 @@ abstract contract CrossChainDeploy is Script {
         for (uint256 i = 0; i < _chain.governors.length; i++) {
             require(
                 DAO(payable(_chain.dao)).hasPermission(_chain.dao, _chain.governors[i], EXECUTE_PERMISSION_ID, ""),
-                "declared governor cannot execute as the DAO"
+                "declared governor cannot execute as the DAO. A CONDITIONAL grant reads as absent here: the probe passes empty calldata, and a selector-scoped condition rejects it. If that is the case, do not declare this address -- see _addGovernor"
             );
         }
     }
@@ -1239,7 +1239,7 @@ abstract contract CrossChainDeploy is Script {
         );
         _assertDeployerBootstrapped(
             hub,
-            "the deployer cannot act as the hub DAO: grant it EXECUTE on the DAO before calling the kit, and do not revoke until installCrosschain() has run"
+            "the deployer cannot act as the hub DAO: grant it EXECUTE on the DAO before calling the kit, and do not revoke until installCrosschain() has run. A CONDITIONAL grant reads as absent here -- the probe passes empty calldata -- so the deployer's grant must be unconditional"
         );
         // `_applyController`'s first action is a `grant` executed AS the DAO,
         // and `PermissionManager.grant` is `auth(ROOT)`. Every `DAOFactory` DAO
@@ -1257,6 +1257,15 @@ abstract contract CrossChainDeploy is Script {
         // EXECUTE), but a DAO built by calling `DAO.initialize` directly leaves
         // ROOT with `_initialOwner`, and the message above tells that operator
         // to grant the DAO ROOT on itself without ever saying "and drop yours".
+        //
+        // Note the direction of the probe's blind spot here. Everywhere else in
+        // the kit a conditional grant reading as absent is fail-closed: the run
+        // stops. This require is NEGATED, so the same blind spot is fail-OPEN --
+        // a deployer holding ROOT under a condition reads as holding nothing and
+        // passes. There is no generic way to read the raw grant back
+        // (`permissionsHashed` is internal and OSx exposes no getter for the
+        // applied condition), and a conditional ROOT grant is not a shape anyone
+        // deploys, so this is recorded rather than defended against.
         require(
             !DAO(payable(hub.dao)).hasPermission(hub.dao, deployer, ROOT_PERMISSION_ID, ""),
             "the deployer holds ROOT on the hub DAO: the handover only revokes EXECUTE, so it could re-grant itself EXECUTE afterwards and bypass the governance being installed. Revoke the deployer's ROOT before calling the kit"
