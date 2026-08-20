@@ -95,7 +95,7 @@ consumer owes the kit exactly this:
 | 3 | satellite DAOs | plugin-less, so `DAOFactory` grants the deployer `EXECUTE` |
 | 4 | satellite controllers | one sweep, dedicated `Executor`, one build pinned on the hub |
 | 5 | adapters + satellite routing | hub-and-spoke, trusted remotes verified on both sides |
-| 6 | satellite governance | your hook, or the multisig default |
+| 6 | satellite governance | the multisig default, or your hook — see [Satellite governance](#satellite-governance) |
 | 7 | satellite handover | the deployer's `EXECUTE` revoked on every DAO the kit created |
 
 | | `installCrosschain()` | |
@@ -132,6 +132,57 @@ property holds. These live in non-virtual code:
 | adapters only after every controller exists | an adapter names the controller on the other side |
 | one controller build across the deployment | resolved as "latest" on the hub — always the first prepare — then demanded everywhere; asking each chain's repo independently splits builds across a lane |
 | `minFailedMessageGas != 0`, checked at prepare | the value is baked into the proxy's `initialize` when it is prepared; a zero reserve lets an out-of-gas payload revert delivery, leaving the message unreachable by both retry and cancel |
+
+## Satellite governance
+
+The default installs an Aragon Multisig on every satellite: it reads that
+chain's `governance.members` and `governance.minApprovals`, installs from
+`multisigRepo`, grants the plugin `EXECUTE` on the satellite DAO, and declares it
+as the governor. An empty roster, a `minApprovals` of zero or above the roster
+size, and any `address(0)` entry are all refused.
+
+### A Safe instead
+
+`_configureSatellite` is the hook. Override it, grant `EXECUTE` to the Safe, and
+declare it:
+
+```solidity
+/// @dev One Safe per satellite chain, deployed and configured beforehand.
+function _safeFor(uint256 _chainId) internal view returns (address);
+
+function _configureSatellite(uint256 _i) internal override {
+    address safe = _safeFor(satellites[_i].chainId);
+    require(safe.code.length > 0, "no Safe at that address on this chain");
+
+    _broadcast();
+    _grantExecute(satellites[_i], safe);
+    vm.stopBroadcast();
+
+    _addGovernor(satellites[_i], safe);
+}
+```
+
+Four things to get right:
+
+1. **The Safe must already exist on that satellite chain, at that address.** The
+   kit deploys DAOs, controllers and adapters, not Safes. Deploying through the
+   same factory and salt on every chain lands on one address, but check
+   `.code.length` on the fork rather than assuming — the hook runs with the
+   satellite's fork already selected, so a plain `.code.length` reads the right
+   chain.
+2. **The grant must be unconditional.** `_assertGovernable` probes with empty
+   calldata, so a `grantWithCondition` reads as absent and the run stops.
+3. **Still give the chain a `governance` block.** The loader reads the roster
+   before any hook runs. `multisigRepo` may be the zero address.
+4. **Do not call `_select` yourself**, and do wrap `_grantExecute` in a
+   broadcast — it acts as the DAO, so without one nothing is sent.
+
+The kit still runs `_assertGovernable` immediately after your hook and again
+inside `_revokeDeployer` just before the handover, so a Safe that cannot act
+stops the run rather than stranding the chain. What it cannot check is whether
+the Safe's threshold is reachable: it proves the address holds `EXECUTE`, not
+that its owners can produce a signature. The roster guard covers that for the
+multisig default; with a Safe, the owner set and threshold are yours to verify.
 
 ## The config
 
