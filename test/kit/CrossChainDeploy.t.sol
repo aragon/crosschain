@@ -89,9 +89,8 @@ contract KitHarness is CrossChainDeploy {
     }
 
     /// @dev What a real consumer does between `initCrosschain()` and
-    ///      `setUpCrosschain()`: create its own bare DAO on the hub fork, as
-    ///      the deployer. The kit no longer does this — which is the point of
-    ///      the whole change — so the harness plays the consumer.
+    ///      `setUpCrosschain()`: create its own bare DAO on the hub fork, as the
+    ///      deployer. The kit does not do this, so the harness plays consumer.
     function createHubDao() external {
         _select(hub);
         _broadcast();
@@ -513,10 +512,10 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
     // -------------------------------------------------------------------------
     // Refusals
     //
-    // Everything above drives a CORRECT deployment and checks the outcome. That
-    // shape can only ever prove the kit does the right thing when asked
-    // correctly -- and every guard here was previously deletable with the suite
-    // still green, because nothing ever asked the kit to say no.
+    // Everything above drives a CORRECT deployment and checks the outcome,
+    // which can only prove the kit does the right thing when asked correctly.
+    // Without the tests below, every guard here is deletable with the suite
+    // still green: nothing else asks the kit to say no.
     // -------------------------------------------------------------------------
 
     /// @notice A DAO with no declared governor must not be handed over.
@@ -533,8 +532,8 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         kit.handOver();
     }
 
-    /// @notice A zero failure-gas reserve must be refused at prepare — on the
-    ///         hub path, which no longer passes through the satellite sweep.
+    /// @notice A zero failure-gas reserve must be refused at prepare, on the
+    ///         hub path, which does not pass through the satellite sweep.
     /// @dev Zero lets an out-of-gas payload revert the whole delivery, recording
     ///      nothing -- the message is then unreachable by both `retryMessage`
     ///      and `cancelMessage`. The value is baked into the proxy's
@@ -552,11 +551,11 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
     // -------------------------------------------------------------------------
     // The two-call contract
     //
-    // The hub DAO is the consumer's now, so the kit can no longer guarantee by
+    // The hub DAO is the consumer's, so the kit cannot guarantee by
     // construction that it can act as it -- it has to refuse when it cannot.
-    // Each test below breaks exactly one precondition and expects the exact
-    // sentence, so a guard that starts reverting for a DIFFERENT reason fails
-    // the test rather than passing it by coincidence.
+    // Each test breaks exactly one precondition and expects the exact sentence,
+    // so a guard reverting for a DIFFERENT reason fails rather than passing by
+    // coincidence.
     // -------------------------------------------------------------------------
 
     /// @notice A topology with no satellites would "succeed" vacuously: a hub

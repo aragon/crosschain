@@ -94,15 +94,11 @@ contract SigningTest is Test {
     // -------------------------------------------------------------------------
 
     /// @notice The resolved deployer must be the account that really sends.
-    /// @dev This is the assertion the suite was missing. It used to check
-    ///      `_resolveDeployer() == address(this)` -- true by construction,
-    ///      because a test calls the probe directly, and therefore true no
-    ///      matter how badly the resolution was broken. It pinned the bug in
-    ///      place rather than catching it.
-    ///
-    ///      Resolution only matters relative to who signs, so compare against a
-    ///      callee's `msg.sender` under a live broadcast instead of against a
-    ///      constant.
+    /// @dev Compared against a callee's `msg.sender` under a live broadcast, not
+    ///      against a constant. `_resolveDeployer() == address(this)` is true by
+    ///      construction when a test calls the probe directly, so it holds no
+    ///      matter how broken resolution is; resolution only means anything
+    ///      relative to who actually signs.
     function test_explicitKey_resolvedDeployerIsTheAccountThatSends() public {
         uint256 key = uint256(keccak256("signer"));
         (address resolved, address actual) = probe.resolvedVersusActual(key, echo);

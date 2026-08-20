@@ -11,14 +11,13 @@ import { Executor } from "../../src/Executor.sol";
 import { Permissions } from "../../src/lib/Permissions.sol";
 
 /// @notice One chain's produced addresses.
-/// @dev Deliberately narrow, rather than the kit's `ChainCfg`. `ChainCfg`
-///      carries every config input too, and returning it across an ABI boundary
-///      generates an encoder heavy enough to blow the stack in a consumer that
-///      compiles without `via_ir` — which is what happened the first time a
-///      consumer inherited this suite. Assertions only ever need the outputs.
+/// @dev Narrow by design, rather than the kit's `ChainCfg`: that carries every
+///      config input too, and returning it across an ABI boundary generates an
+///      encoder heavy enough to blow the stack without `via_ir`. Assertions
+///      need only the outputs.
 ///
-///      File-level so a consumer's harness can build one without inheriting the
-///      assertions.
+///      File-level, so a consumer's harness can build one without inheriting
+///      the assertions.
 struct Deployed {
     address dao;
     address controller;
@@ -30,18 +29,15 @@ struct Deployed {
 /// @title CrossChainDeployConformance
 /// @notice The properties a finished deployment must have, as assertions a
 ///         consumer can point at its own run.
-/// @dev **Why this lives here and not in a document.** Two projects that deploy
-///      the same stack will drift, and a convention written down in each of
-///      their repos drifts with them. These are one copy, versioned with the
-///      contracts, and a consumer that stops satisfying one gets a failing test
-///      rather than a stale paragraph.
+/// @dev One copy, versioned with the contracts: a consumer that stops
+///      satisfying a property gets a failing test rather than a stale paragraph
+///      in its own repo.
 ///
-///      Each assertion names the failure it prevents, because several of them
-///      are invisible on chain until something silently does not happen — a
-///      veto that never arrives, a DAO nobody notices is frozen until they need
-///      to repair it.
+///      Each assertion names the failure it prevents — several are invisible on
+///      chain until something silently does not happen, like a veto that never
+///      arrives or a DAO nobody notices is frozen.
 ///
-///      Usage: inherit, and call `assertSatelliteConformant` /
+///      Usage: inherit, then call `assertSatelliteConformant` /
 ///      `assertHubConformant` with each chain's config while standing on that
 ///      chain's fork.
 abstract contract CrossChainDeployConformance is Test {
@@ -86,12 +82,10 @@ abstract contract CrossChainDeployConformance is Test {
 
     /// @dev Prevents: the deploying key keeping permanent unconditional
     ///      authority over a live DAO, bypassing its governance entirely.
-    /// @dev Checks exactly ONE address -- the deployer -- and the name now says
-    ///      so. The previous name (`assertNoEoaCanExecute`) stated a universal
-    ///      property this cannot verify: a consumer overriding the `virtual`
-    ///      `_configureSatellite` chooses who gets `EXECUTE` on a kit-created
-    ///      satellite DAO, and any stray EOA among them passes this untouched.
-    ///      If you need the universal property, sweep your own list.
+    /// @dev Checks exactly ONE address, the deployer. A consumer overriding
+    ///      `_configureSatellite` chooses who else gets `EXECUTE` on a
+    ///      kit-created satellite DAO, and any stray EOA among them passes this
+    ///      untouched. Sweep your own list if you need that property.
     function assertDeployerCannotExecute(Deployed memory _c, address _deployer) internal view {
         DAO dao = DAO(payable(_c.dao));
         assertFalse(
@@ -119,12 +113,10 @@ abstract contract CrossChainDeployConformance is Test {
     /// @dev Prevents: an inbound cross-chain message executing with full DAO
     ///      authority. If the controller holds EXECUTE on its DAO, anything that
     ///      clears the adapter can do anything the DAO can.
-    /// @dev Checks `EXECUTE` only. The previous name
-    ///      (`assertControllerHoldsNothingOnItsDao`) claimed more than the body
-    ///      does: a controller granted `ROOT` on its own DAO passes this, and
-    ///      `ROOT` is strictly worse -- it can grant itself `EXECUTE` at will.
-    ///      The real defence is construction, not this assertion: the setup is
-    ///      handed `address(0)` for the executor slot.
+    /// @dev Checks `EXECUTE` only: a controller granted `ROOT` on its own DAO
+    ///      passes this, and `ROOT` is worse -- it can grant itself `EXECUTE` at
+    ///      will. The real defence is construction, not this assertion; the
+    ///      setup is handed `address(0)` for the executor slot.
     function assertControllerCannotExecuteAsItsDao(Deployed memory _c) internal view {
         DAO dao = DAO(payable(_c.dao));
         assertFalse(
