@@ -27,8 +27,9 @@ contract ChainIdRegistry is IChainIdRegistry, DaoAuthorizable {
     mapping(uint256 => uint256) private _toNative;
 
     /// @notice bridge-native chain id -> standard chain id.
-    /// @dev Kept in lockstep with `_toNative`; the two are only ever written
-    ///      together so they cannot drift.
+    /// @dev The exact inverse of `_toNative`: the two are always written
+    ///      together, and `setChainIdPair` rejects a native id already claimed
+    ///      by another chain, so they cannot drift.
     mapping(uint256 => uint256) private _fromNative;
 
     /// @param _dao The DAO whose permission manager authorizes updates.
@@ -53,7 +54,11 @@ contract ChainIdRegistry is IChainIdRegistry, DaoAuthorizable {
     /// @param _standardChainId The standard (EVM) chain id.
     /// @param _nativeChainId The bridge's own id for that chain. Pass `0` to
     ///        clear the lane.
-    /// @dev Clearing a lane makes every send to and receive from that chain
+    /// @dev Reverts if `_nativeChainId` is already claimed by a different
+    ///      standard chain id. Reassigning one means clearing its current owner
+    ///      first; both calls fit in a single proposal.
+    ///
+    ///      Clearing a lane makes every send to and receive from that chain
     ///      revert at the adapter. Inbound messages already in flight over the
     ///      bridge will fail on arrival.
     function setChainIdPair(uint256 _standardChainId, uint256 _nativeChainId)
@@ -63,9 +68,21 @@ contract ChainIdRegistry is IChainIdRegistry, DaoAuthorizable {
         // `0` is the "unset" marker of both tables, so it is never a valid key.
         if (_standardChainId == 0) revert Errors.INVALID_CHAIN_ID();
 
+        // A native id belongs to exactly one chain. Rejecting a second claimant
+        // is what makes `_fromNative` a true inverse of `_toNative`: without it
+        // the tables drift, and the receive path resolves a genuine message to
+        // the wrong origin chain. Reassigning one means clearing it first.
+        if (_nativeChainId != 0) {
+            uint256 claimedBy = _fromNative[_nativeChainId];
+            if (claimedBy != 0 && claimedBy != _standardChainId) {
+                revert Errors.NATIVE_CHAIN_ID_ALREADY_MAPPED(_nativeChainId, claimedBy);
+            }
+        }
+
         // Drop the previous reverse entry before writing the new one. Without
         // this a repoint would leave `_fromNative[old]` in place and the
-        // receive path would keep accepting messages over the retired lane.
+        // receive path would keep accepting messages over the retired lane. The
+        // check above guarantees that entry is this chain's own, never another's.
         uint256 previousNativeChainId = _toNative[_standardChainId];
         if (previousNativeChainId != 0) {
             delete _fromNative[previousNativeChainId];

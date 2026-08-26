@@ -142,18 +142,55 @@ contract ChainIdRegistryTest is Test {
         assertEq(registry.fromNative(SELECTOR), CHAIN);
     }
 
-    /// @dev A misconfiguration the registry permits. Pinned so the asymmetry --
-    ///      last writer owns the reverse entry, both forward entries survive --
-    ///      is a known state rather than a surprise.
-    function test_twoChainsPointedAtOneSelector_lastWriterOwnsTheReverseEntry() public {
+    /// @dev The exclusivity guard. Without it `_fromNative` stops being the
+    ///      inverse of `_toNative`, and the receive path resolves a genuine
+    ///      message from the first chain as having come from the second.
+    function test_claimingASelectorAnotherChainOwnsReverts() public {
+        vm.prank(manager);
+        registry.setChainIdPair(CHAIN, SELECTOR);
+
+        vm.prank(manager);
+        vm.expectRevert(abi.encodeWithSelector(Errors.NATIVE_CHAIN_ID_ALREADY_MAPPED.selector, SELECTOR, CHAIN));
+        registry.setChainIdPair(CHAIN + 1, SELECTOR);
+
+        assertEq(registry.toNative(CHAIN + 1), 0, "the rejected chain must not map forward");
+        assertEq(registry.fromNative(SELECTOR), CHAIN, "the owner keeps the reverse entry");
+    }
+
+    /// @dev Reassigning a selector is a two-step: clear the owner, then claim.
+    ///      Both fit in one proposal, so the sequence stays atomic.
+    function test_aClearedSelectorCanBeClaimedByAnotherChain() public {
         vm.startPrank(manager);
         registry.setChainIdPair(CHAIN, SELECTOR);
+        registry.setChainIdPair(CHAIN, 0);
         registry.setChainIdPair(CHAIN + 1, SELECTOR);
         vm.stopPrank();
 
-        assertEq(registry.toNative(CHAIN), SELECTOR, "the first chain still maps forward");
-        assertEq(registry.toNative(CHAIN + 1), SELECTOR, "so does the second");
-        assertEq(registry.fromNative(SELECTOR), CHAIN + 1, "the reverse entry names the last writer");
+        assertEq(registry.toNative(CHAIN), 0, "the previous owner is cleared");
+        assertEq(registry.toNative(CHAIN + 1), SELECTOR);
+        assertEq(registry.fromNative(SELECTOR), CHAIN + 1);
+    }
+
+    /// @dev Regression. The `delete` of the previous reverse entry fires without
+    ///      checking it belongs to the chain being written, so before the
+    ///      exclusivity guard, repairing a typo silently killed the inbound lane
+    ///      of the chain the typo had clobbered -- a chain named in neither call
+    ///      nor any event. The guard rejects the typo itself, so the sequence
+    ///      can no longer start.
+    function test_repairingATypoCannotBreakAnUnrelatedLane() public {
+        vm.startPrank(manager);
+        registry.setChainIdPair(CHAIN, SELECTOR);
+        registry.setChainIdPair(CHAIN + 1, OTHER_SELECTOR);
+
+        // The typo: the second chain's selector pasted onto the first.
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.NATIVE_CHAIN_ID_ALREADY_MAPPED.selector, OTHER_SELECTOR, CHAIN + 1)
+        );
+        registry.setChainIdPair(CHAIN, OTHER_SELECTOR);
+        vm.stopPrank();
+
+        assertEq(registry.toNative(CHAIN + 1), OTHER_SELECTOR, "the untouched lane still sends");
+        assertEq(registry.fromNative(OTHER_SELECTOR), CHAIN + 1, "and still receives");
     }
 
     function testFuzz_roundTripsAnyNonZeroPair(uint256 _chainId, uint256 _nativeChainId) public {

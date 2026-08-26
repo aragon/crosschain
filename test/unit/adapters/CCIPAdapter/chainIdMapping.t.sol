@@ -50,12 +50,14 @@ contract CCIPAdapterChainIdMappingTest is CCIPAdapterBase {
 
     /// @dev The same permission repoints a LIVE lane, and the adapter follows
     ///      without notice. Asserted so the trust it hands the holder is visible.
+    ///      Onto an UNCLAIMED selector: the registry rejects one another chain
+    ///      already owns, which `ChainIdRegistry.t.sol` covers.
     function test_repointingALiveLaneChangesWhereTheAdapterSends() public {
         assertEq(adapter.toNativeChainId(CHAIN_ETH_MAINNET), uint256(SEL_ETH_MAINNET));
 
-        seedPair(registry, CHAIN_ETH_MAINNET, uint256(SEL_BASE));
+        seedPair(registry, CHAIN_ETH_MAINNET, uint256(SEL_SEPOLIA));
 
-        assertEq(adapter.toNativeChainId(CHAIN_ETH_MAINNET), uint256(SEL_BASE));
+        assertEq(adapter.toNativeChainId(CHAIN_ETH_MAINNET), uint256(SEL_SEPOLIA));
         // The retired reverse entry must not survive: mainnet's old selector
         // would otherwise still authenticate inbound messages.
         vm.expectRevert(abi.encodeWithSelector(Errors.UNKNOWN_NATIVE_CHAIN_ID.selector, uint256(SEL_ETH_MAINNET)));

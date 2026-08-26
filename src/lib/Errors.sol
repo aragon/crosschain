@@ -82,6 +82,10 @@ library Errors {
     /// @notice Thrown when a bridge-native chain id has no standard counterpart.
     error UNKNOWN_NATIVE_CHAIN_ID(uint256 nativeChainId);
 
+    /// @notice Thrown when a bridge-native chain id is claimed by a second
+    ///         standard chain id. Clear the existing pair before reassigning it.
+    error NATIVE_CHAIN_ID_ALREADY_MAPPED(uint256 nativeChainId, uint256 claimedBy);
+
     /// @notice Thrown when the bridge itself does not support the destination
     ///         chain, even though the lane is configured locally.
     error DESTINATION_CHAIN_ID_NOT_SUPPORTED(uint256 nativeChainId);

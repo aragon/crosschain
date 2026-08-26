@@ -4,6 +4,8 @@ pragma solidity ^0.8.17;
 
 import { Test } from "forge-std/Test.sol";
 
+import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+
 import { ChainIdRegistry } from "@src/registry/ChainIdRegistry.sol";
 
 /// @title ChainsFixture
@@ -20,8 +22,12 @@ abstract contract ChainsFixture is Test {
     }
 
     /// @notice The CCIP chain selector of a named chain.
+    /// @dev `SafeCast`, not a plain `uint64` cast: the selectors used to be
+    ///      `uint64` constants, so an over-wide one was a compile error. Read
+    ///      from JSON it would truncate silently, and every assertion reading
+    ///      the same file would agree with itself on the wrong value.
     function ccipSelector(string memory _name) internal view returns (uint64) {
-        return uint64(vm.parseJsonUint(vm.readFile(CHAINS_JSON), string.concat(".", _name, ".ccipSelector")));
+        return SafeCast.toUint64(vm.parseJsonUint(vm.readFile(CHAINS_JSON), string.concat(".", _name, ".ccipSelector")));
     }
 
     /// @notice Writes a named chain's pair into a registry.
