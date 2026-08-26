@@ -1,7 +1,7 @@
 # Cross-chain deploy kit
 
 Gives a hub DAO **you create** the whole cross-chain stack — the controller on
-the hub and on N satellite chains, satellite DAOs, the CCIP adapters and the
+the hub and on N satellite chains, satellite DAOs, the chain id registries, the CCIP adapters and the
 routing — in two calls. It will not finish a deployment that leaves a DAO
 nobody can act as, and it will not start one against a hub DAO it cannot act
 as.
@@ -125,7 +125,7 @@ property holds. These live in non-virtual code:
 | the executor is never the DAO | otherwise any inbound message clearing the adapter executes with full DAO authority |
 | no controller holds a permission on its DAO | same, from the other side. Prevented by construction rather than checked: the setup is given `address(0)` for the executor slot, which is what makes it mint a dedicated one |
 | every adapter trusts the remote CONTROLLER | read back off both adapters after deployment. `trustedRemote` is constructor-only with no setter, so a lane wired to a DAO, or to the remote adapter instead of its controller, deploys quietly and then reverts every inbound message — and repair needs new adapters on both chains |
-| every adapter can map the chain ids it serves | asked of the registry the deployed adapter is actually bound to, not of the config that was meant to seed it. A missing or mistyped `ccipChainSelector`, or a pair written to the wrong chain's registry, gets an adapter that reverts `UNKNOWN_CHAIN_ID` on every send over that lane |
+| every adapter can map the chain ids it serves | asked of the registry the deployed adapter is actually bound to, not of the config that was meant to seed it. A missing selector, or a pair written to the wrong chain's registry, gets an adapter that reverts `UNKNOWN_CHAIN_ID` on every send over that lane. This proves a lane resolves, **not** that it resolves to the right chain — a wrong but non-zero selector passes |
 | every DAO can manage its own chain id registry | the registry is granted to the DAO, never to the deploying key. Without the grant, adding a chain later means replacing adapters on both sides; with it granted to the deployer instead, the handover would leave behind an authority that can repoint a live lane |
 | the hub's lanes are read back after routing | `_routeHub` writes controller storage; the check reads `chainToAdapter` back rather than trusting the write, because adapter-side reads say nothing about what the controller learned |
 | the PSP never keeps `ROOT` | it needs `ROOT` for one transaction; longer is a second unconditional authority |
@@ -215,10 +215,30 @@ have:
 `ccipChainSelector` is CCIP's own id for the chain the block describes, not for
 its counterpart. The kit seeds each chain's `ChainIdRegistry` with the selectors
 of the chains it talks to, reading them from the other blocks — so the hub's
-selector ends up in every satellite's registry, and vice versa. Get one wrong and
-`_requireMapsChain` fails before the run finishes, but AFTER the satellites are
-handed over: it is config, so it is checked at the same point every other
-placeholder is.
+selector ends up in every satellite's registry, and vice versa.
+
+Transcribe it from Chainlink's
+[`chain-selectors` registry](https://github.com/smartcontractkit/chain-selectors/blob/main/selectors.yml);
+`test/fixtures/chains.json` in this repo carries pre-verified values for 18 chains,
+and the mainnet ones are cross-checked against a live Router by
+`test_fork_everyMappedSelectorIsALiveLane`. Two transcription traps: selectors
+exceed 2^53, so any JavaScript-based config tooling will silently mangle them
+(`5009297550715157269` becomes `…157000`) — write them as a quoted string if
+anything but `forge` touches your JSON; and the field is `ccipChainSelector` here
+but `ccipSelector` in `chains.json`, so do not copy the key along with the value.
+
+**Double-check the value, because the kit cannot.** Omit it and the loader stops
+at `path ".hub.ccipChainSelector" must return exactly one JSON value`; write `0`
+and `_requireChain` stops at `ccipChainSelector missing`; write something wider
+than a `uint64` and it stops there too. All three are pre-flight, before anything
+is broadcast. But a **wrong yet plausible** selector is not caught by anything:
+`_requireMapsChain` proves a lane RESOLVES, never that it resolves to the right
+chain. A typo naming another real chain deploys, hands over, and then sends
+governance payloads to that chain — fee spent, message lost, no revert. Before
+the registry this was impossible because the table was audited bytecode; it is
+the price of making the table configurable. The repair is the same trade in the
+other direction: one `setChainIdPair` through governance, rather than a
+replacement adapter on both sides.
 
 **Every key above is required on every chain, including the ones you do not use.**
 The loader reads scalars one path at a time and does not probe for absence, so a

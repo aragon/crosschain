@@ -185,8 +185,9 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
         pure
         returns (Client.EVM2AnyMessage memory)
     {
-        bytes memory extraArgs =
-            Client._argsToBytes(Client.GenericExtraArgsV2({ gasLimit: _gasLimit, allowOutOfOrderExecution: true }));
+        bytes memory extraArgs = Client._argsToBytes(
+            Client.GenericExtraArgsV2({ gasLimit: _gasLimit, allowOutOfOrderExecution: true })
+        );
 
         return Client.EVM2AnyMessage({
             receiver: abi.encode(_receiver),

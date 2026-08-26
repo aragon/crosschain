@@ -2,8 +2,6 @@
 
 pragma solidity ^0.8.17;
 
-import { Test } from "forge-std/Test.sol";
-
 import { Client } from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 
 import { CCIPAdapter } from "@src/adapters/CCIP/CCIPAdapter.sol";

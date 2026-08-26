@@ -25,7 +25,7 @@ abstract contract BaseAdapter is IBaseAdapter {
     ///
     ///      One registry per adapter, and repointing it means a new adapter -
     ///      which is the trade for making the TABLE governable without one. See
-    ///      {IChainIdRegistry} for what that hands to the permission holder.
+    ///      {ChainIdRegistry} for what that hands to the permission holder.
     IChainIdRegistry public immutable CHAIN_ID_REGISTRY;
 
     /// @notice This adapter's own address, captured at construction.

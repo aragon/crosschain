@@ -11,7 +11,8 @@ import { Permissions } from "../lib/Permissions.sol";
 import { IChainIdRegistry } from "./IChainIdRegistry.sol";
 
 /// @title ChainIdRegistry
-/// @notice A runtime-updatable chain id translation table for a single adapter.
+/// @notice A runtime-updatable chain id translation table for the adapters of a
+///         single bridge protocol.
 /// @dev Adding a chain to a live deployment is a governance call here instead
 ///      of an adapter redeploy + re-attach cycle on the controller.
 ///

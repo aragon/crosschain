@@ -161,6 +161,14 @@ abstract contract CrossChainDeploy is Script {
         require(_chain.crossChainRepo != address(0), "crossChainRepo missing");
         require(_chain.ccipRouter != address(0), "ccipRouter missing");
         require(_chain.ccipChainSelector != 0, "ccipChainSelector missing");
+        // The registry stores a `uint256` and nothing narrows it on write, but a
+        // CCIP selector is a `uint64`: the adapter `SafeCast`s at every quote
+        // and send. Caught here, this is a config typo before any broadcast;
+        // uncaught, it deploys and hands over cleanly and then reverts every
+        // send over the lane.
+        require(
+            _chain.ccipChainSelector <= type(uint64).max, "ccipChainSelector is wider than a CCIP selector (uint64)"
+        );
     }
 
     /// @notice One fork per chain.
@@ -731,21 +739,31 @@ abstract contract CrossChainDeploy is Script {
     }
 
     /// @dev Asks the deployed adapter, rather than trusting that
-    ///      {_deployRegistries} seeded what this lane needs. A missing or
-    ///      mistyped `ccipChainSelector`, a pair written to the wrong chain's
-    ///      registry, or an adapter bound to a registry that was never seeded
-    ///      all produce the same thing: an adapter that reverts
+    ///      {_deployRegistries} seeded what this lane needs. A pair written to
+    ///      the wrong chain's registry, or an adapter bound to a registry that
+    ///      was never seeded, produce an adapter that reverts
     ///      `UNKNOWN_CHAIN_ID` on every send over that lane. The deployment
     ///      completes; the lane never carries a message.
     ///
-    ///      One `staticcall` per lane settles it against the registry the
+    ///      One `staticcall` per lane settles that against the registry the
     ///      adapter is actually bound to, which reading the config back cannot.
+    ///
+    ///      WHAT THIS DOES NOT CATCH: a selector that is wrong but non-zero.
+    ///      This proves a lane RESOLVES, never that it resolves to the right
+    ///      chain -- the kit has no oracle for that, since the selector is the
+    ///      operator's transcription. A typo naming another real chain deploys
+    ///      and hands over silently and then sends governance payloads there.
+    ///      Before the registry that was impossible, because the table was
+    ///      audited bytecode; it is the cost of making the table configurable,
+    ///      and the reason `ccipChainSelector` is worth double-checking against
+    ///      Chainlink's directory. The repair is one `setChainIdPair` through
+    ///      governance, which is the same trade in the other direction.
     function _requireMapsChain(address _adapter, uint256 _chainId) private view {
         try IBaseAdapter(_adapter).toNativeChainId(_chainId) returns (uint256 native) {
             require(native != 0, "adapter maps this chain id to a zero selector");
         } catch {
             revert(
-                "adapter cannot map a chain id it must serve: the deployed adapter class has no selector for this lane, so every send over it would revert"
+                "adapter cannot map a chain id it must serve: its ChainIdRegistry has no pair for this lane, so every send over it would revert -- check ccipChainSelector on the chain this lane points AT, and that it was seeded into THIS chain's registry"
             );
         }
     }
@@ -795,7 +813,16 @@ abstract contract CrossChainDeploy is Script {
 
         // CREATE2 for the reason spelled out in {_newAdapter}: an address
         // derived from a deployer nonce is not reproducible on a resumed run.
-        bytes32 salt = keccak256(abi.encode(_chain.chainId, _chain.dao, "ChainIdRegistry"));
+        //
+        // The CONTROLLER is in the salt, not just the DAO, and that is the load
+        // bearing part. A salt over `(chainId, dao)` alone is constant across
+        // runs for a consumer deploying onto a hub DAO it already had, so a run
+        // that dies after this broadcast makes every later run collide here
+        // forever -- and the address is computable by anyone the moment the DAO
+        // is on chain, so a griefer could occupy it permanently. The controller
+        // is fresh per run and fixed within one, which is exactly the property
+        // {_newAdapter} relies on: stable under `--resume`, new after a restart.
+        bytes32 salt = keccak256(abi.encode(_chain.chainId, _chain.dao, _chain.controller, "ChainIdRegistry"));
         _chain.registry = address(new ChainIdRegistry{ salt: salt }(IDAO(_chain.dao)));
 
         // Nothing holds this permission until it is granted, so a registry is

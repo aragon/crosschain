@@ -27,9 +27,6 @@ contract ChainIdRegistryTest is Test {
     address internal manager;
     address internal stranger;
 
-    /// @dev Redeclared from `IChainIdRegistry` so `vm.expectEmit` can emit it.
-    event ChainIdPairSet(uint256 indexed standardChainId, uint256 nativeChainId);
-
     uint256 internal constant CHAIN = 1;
     uint256 internal constant SELECTOR = 5_009_297_550_715_157_269;
     uint256 internal constant OTHER_SELECTOR = 15_971_525_489_660_198_786;
@@ -86,7 +83,7 @@ contract ChainIdRegistryTest is Test {
 
     function test_emitsChainIdPairSet() public {
         vm.expectEmit(true, false, false, true, address(registry));
-        emit ChainIdPairSet(CHAIN, SELECTOR);
+        emit IChainIdRegistry.ChainIdPairSet(CHAIN, SELECTOR);
 
         vm.prank(manager);
         registry.setChainIdPair(CHAIN, SELECTOR);
