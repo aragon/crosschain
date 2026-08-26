@@ -7,11 +7,16 @@ The intended behaviour of the `CrossChainController` plugin and its adapters.
 The architecture is deliberately flexible: adapters are swappable, because the
 `CrossChainController` owns the per-destination lane config (which local adapter, which
 remote receiver), the executor and the gas reserve. Adapters hold no lane-selection state
-of their own. They do hold their own bridge state - the router, the fee token, and the
-trusted-remote map that authenticates inbound senders - all fixed at construction with no
+of their own. They do hold their own bridge state - the router, the fee token, the
+trusted-remote map that authenticates inbound senders, and a binding to the
+`ChainIdRegistry` they resolve chain ids through - all fixed at construction with no
 setter. Swapping in a new bridge therefore means deploying an adapter on **each** chain of
 the lane, baking in the counterpart controller as its trusted remote, and updating the
 config on **both** controllers.
+
+The registry binding is fixed; the table behind it is not. That is the one piece of
+adapter-reachable state a DAO can change without a redeploy - see
+[`ChainIdRegistry`](#chainidregistry).
 
 Routing works off a per-destination config, keyed by the standard chain id. The config
 stored under that id holds two addresses:
@@ -230,9 +235,13 @@ itself so it can read its own trusted-remote map.
 > loudly. An adapter that writes to storage on the send path is a live corruption bug in
 > the controller, not a bug in the adapter.
 >
-> This is why `CCIP_ROUTER` and `FEE_TOKEN` on `CCIPAdapter` are `immutable`: immutables
-> are baked into the runtime bytecode, so they read identically in both contexts. The cost
-> is that changing one means deploying a new adapter - deliberately paid.
+> This is why `CCIP_ROUTER` and `FEE_TOKEN` on `CCIPAdapter`, and `CHAIN_ID_REGISTRY` on
+> `BaseAdapter`, are `immutable`: immutables are baked into the runtime bytecode, so they
+> read identically in both contexts. The cost is that changing one means deploying a new
+> adapter - deliberately paid. `CHAIN_ID_REGISTRY` is the instructive case: the send path
+> makes an external `staticcall` through it, and only because the ADDRESS is an immutable
+> does that call go to the right contract under `delegatecall`. Held in storage it would
+> resolve against a controller slot.
 >
 > Adapter storage is legal on the **receive path only**, which runs as the adapter under a
 > plain `CALL`. `_trustedRemotes` is exactly that: a real mapping, read by `ccipReceive` and
@@ -243,8 +252,33 @@ itself so it can read its own trusted-remote map.
 | Function | Access | What it does |
 |---|---|---|
 | `sendMessage(receiver, dstChainId, gasLimit, message)` | `onlyDelegatecallFromController` | Sends over the bridge. Because it is delegatecalled, the fee comes from the **controller's** balance and the bridge attributes the message to the **controller's** address. Returns `(messageId, fee)`. |
-| `toNativeChainId(chainId)` / `fromNativeChainId(chainId)` | view | Translates between standard EVM chain ids and the bridge's own encoding. Both **must revert** on unmapped ids - returning `0` would silently address the wrong lane. |
+| `toNativeChainId(chainId)` / `fromNativeChainId(chainId)` | view | Translates between standard EVM chain ids and the bridge's own encoding, by reading the `ChainIdRegistry` the adapter is bound to. Both **must revert** on unmapped ids - the registry answers `0`, and returning that would silently address the wrong lane. Implemented once on `BaseAdapter` and not `virtual`, so no adapter can quietly substitute a second table. |
 | `_forwardMessage(messageId, payload, originChainId)` | internal | Hands an authenticated inbound message to the controller via a plain `CALL`. Guarded by an `address(this) == _selfAddress` check, so it can never run under `delegatecall`. |
+
+### `ChainIdRegistry`
+
+The chain-id table is a contract, not bytecode. **One registry per adapter protocol** - CCIP
+addresses chains by its own selector, another bridge by something else, and the two tables are
+unrelated - and the adapter binds its registry as an `immutable` at construction, so the send path
+resolves it correctly under `delegatecall`.
+
+The trade is deliberate: the **table** becomes a governance call, the **binding** does not. Adding
+a chain to a live deployment is one `setChainIdPair`, where it used to mean a replacement adapter
+on both sides plus a governance round on each. Repointing an adapter at a different registry still
+means a new adapter.
+
+| Function | Access | What it does |
+|---|---|---|
+| `toNative(standardChainId)` / `fromNative(nativeChainId)` | view | The two directions of the table. Both answer `0` for an unmapped id; turning that into a revert is the adapter's job, not the registry's. |
+| `setChainIdPair(standardChainId, nativeChainId)` | `MANAGE_CHAIN_ID_REGISTRY_PERMISSION` | Writes both directions at once for the pair it is given, so a single lane cannot drift. Note the limit of that guarantee: pointing **two** standard chain ids at one selector leaves both forward entries standing while the reverse entry names only the last writer, so the loser still sends over the shared selector but no longer resolves anything inbound over it. The registry permits this; nothing detects it. Rejects a `0` standard chain id - that is the unset marker of both tables and can never be a key. Pass `0` as the native id to **clear** a lane, which makes every send to and receive from that chain revert at the adapter; inbound messages already in flight fail on arrival. A repoint `delete`s the previous reverse entry first, or the retired selector would go on resolving and the receive path would keep accepting messages over a lane governance believes it closed. |
+
+> **The registry is a trust dependency of every adapter bound to it.** Whoever holds
+> `MANAGE_CHAIN_ID_REGISTRY_PERMISSION` can repoint a live lane at a different bridge-native chain
+> in a single call - sending messages to the wrong chain, and accepting inbound traffic attributed
+> to it - and the adapter follows without notice. It warrants the same governance rigor as
+> `MANAGE_CONTROLLER_CONFIG_PERMISSION` on the controller. The intended holder is the DAO that
+> governs the adapter. Monitoring that watches `chainToAdapter` will not see registry changes:
+> watch `ChainIdPairSet` too.
 
 ### `Executor`
 
@@ -315,6 +349,11 @@ the *other* chain's controller.
 
 1. Install `CrossChainController` on L1. (CCC_L1)
 2. Install `CrossChainController` on L2. (CCC_L2)
+2.5. Deploy a `ChainIdRegistry` on each chain (REGISTRY_L1, REGISTRY_L2), grant
+   `MANAGE_CHAIN_ID_REGISTRY_PERMISSION` on each to that chain's DAO, and seed the
+   counterpart's pair: REGISTRY_L1 gets `(<L2 chain id>, <L2 CCIP selector>)`,
+   REGISTRY_L2 gets `(<L1 chain id>, <L1 CCIP selector>)`. Before the adapters -
+   each one takes its registry in the constructor and has no setter.
 3. On L1, deploy `CCIPAdapter` (ADAPTER_L1) with:
    - `_crosschainController` = **CCC_L1** - the LOCAL controller. The send path is
      `delegatecall`ed from it, and `onlyDelegatecallFromController` compares
@@ -322,12 +361,14 @@ the *other* chain's controller.
      revert with `SEND_PATH_NOT_DELEGATECALLED`.
    - `_ccipRouter` = the CCIP Router on L1.
    - `_feeToken` = the fee token, or `address(0)` for native.
+   - `_chainIdRegistry` = REGISTRY_L1 from step 2.5, already seeded. Constructor-only,
+     and rejected if it has no code.
    - `_trustedRemoteConfigs` = `[{ standardChainId: <L2 chain id>, trustedRemote: CCC_L2 }]`
      - the remote **controller**, never the remote adapter: the send path is a
      `delegatecall`, so the bridge attributes inbound messages to the controller.
 4. On L2, deploy `CCIPAdapter` (ADAPTER_L2) with the mirror image:
    `_crosschainController` = **CCC_L2**, `_ccipRouter` = the CCIP Router on L2,
-   `_feeToken` as above, and
+   `_feeToken` as above, `_chainIdRegistry` = REGISTRY_L2, and
    `_trustedRemoteConfigs` = `[{ standardChainId: <L1 chain id>, trustedRemote: CCC_L1 }]`.
 5. On L1, call `updateConfig` on CCC_L1 with `_chainIds = [<L2 chain id>]` and
    `_configs = [{ localAdapter: ADAPTER_L1, remoteAdapter: ADAPTER_L2 }]`.

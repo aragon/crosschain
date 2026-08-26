@@ -13,8 +13,8 @@ import { BaseAdapter } from "@src/adapters/BaseAdapter.sol";
 ///         immutables-only rule exists for.
 /// @dev DO NOT USE IN PRODUCTION!
 contract TrustedRemoteWritingCCIPAdapter is CCIPAdapter {
-    constructor(address _controller, address _router)
-        CCIPAdapter(_controller, _router, address(0), new BaseAdapter.TrustedRemoteConfig[](0))
+    constructor(address _controller, address _router, address _registry)
+        CCIPAdapter(_controller, _router, address(0), _registry, new BaseAdapter.TrustedRemoteConfig[](0))
     { }
 
     function sendMessage(address _receiver, uint256 _destinationChainId, uint256 _gasLimit, bytes calldata _message)

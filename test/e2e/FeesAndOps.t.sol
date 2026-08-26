@@ -169,8 +169,9 @@ contract CrossChainFeesAndOpsE2ETest is CrossChainE2EBase {
     ///      operationally: the failure names the lane in OUR vocabulary, and no
     ///      fee is ever moved. `sentCount` pins the second half of that.
     function test_e2e_unsupportedLaneIsRejectedByTheAdapterBeforeTheRouter() public {
-        // Configure a lane on the controller for a chain the ADAPTER can map but
-        // the ROUTER has no peer for.
+        // A chain the ADAPTER can map but the ROUTER has no peer for. The
+        // registry entry is what makes it mappable.
+        origin.registry.setChainIdPair(THIRD_CHAIN_ID, THIRD_SELECTOR);
         _configureLane(origin, THIRD_CHAIN_ID, makeAddr("remoteAdapterC"));
 
         uint256 balanceBefore = address(origin.controller).balance;

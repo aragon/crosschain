@@ -12,8 +12,6 @@ import { Client } from "@chainlink/contracts-ccip/contracts/libraries/Client.sol
 import { IAny2EVMMessageReceiver } from "@chainlink/contracts-ccip/contracts/interfaces/IAny2EVMMessageReceiver.sol";
 
 import { Errors } from "../../lib/Errors.sol";
-import { ChainIds } from "../../lib/ChainIds.sol";
-import { CCIPChainIds } from "./CCIPChainIds.sol";
 
 import { BaseAdapter } from "../BaseAdapter.sol";
 import { IBaseAdapter } from "../IBaseAdapter.sol";
@@ -52,15 +50,17 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
     /// @param _ccipRouter The CCIP router on this chain.
     /// @param _feeToken The fee token, or `address(0)` for native. A non-native
     ///        token must be a deployed contract.
+    /// @param _chainIdRegistry The CCIP chain id <-> selector table.
     /// @param _trustedRemoteConfigs The remote controllers trusted to originate
     ///        messages, per standard chain id.
     constructor(
         address _crosschainController,
         address _ccipRouter,
         address _feeToken,
+        address _chainIdRegistry,
         TrustedRemoteConfig[] memory _trustedRemoteConfigs
     )
-        BaseAdapter(_crosschainController, _trustedRemoteConfigs)
+        BaseAdapter(_crosschainController, _chainIdRegistry, _trustedRemoteConfigs)
     {
         // Also covers `address(0)`, which trivially has no code.
         if (_ccipRouter.code.length == 0) revert Errors.HAS_NO_CODE(_ccipRouter);
@@ -195,85 +195,5 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
             extraArgs: extraArgs,
             feeToken: _feeToken
         });
-    }
-
-    // -------------------------------------------------------------------------
-    // Chain id mapping
-    //
-    // CCIP addresses chains by its own selector, not by the EVM chain id. Both
-    // directions revert on an unmapped id: returning `0` would silently address
-    // the wrong lane. The selectors themselves live in `CCIPChainIds`.
-    // -------------------------------------------------------------------------
-
-    /// @inheritdoc IBaseAdapter
-    function toNativeChainId(uint256 _chainId) public view virtual override returns (uint256) {
-        if (_chainId == ChainIds.ETHEREUM) {
-            return CCIPChainIds.ETHEREUM;
-        } else if (_chainId == ChainIds.AVALANCHE) {
-            return CCIPChainIds.AVALANCHE;
-        } else if (_chainId == ChainIds.POLYGON) {
-            return CCIPChainIds.POLYGON;
-        } else if (_chainId == ChainIds.BNB) {
-            return CCIPChainIds.BNB;
-        } else if (_chainId == ChainIds.OPTIMISM) {
-            return CCIPChainIds.OPTIMISM;
-        } else if (_chainId == ChainIds.CRONOS) {
-            return CCIPChainIds.CRONOS;
-        } else if (_chainId == ChainIds.HYPER_EVM) {
-            return CCIPChainIds.HYPER_EVM;
-        } else if (_chainId == ChainIds.PLASMA) {
-            return CCIPChainIds.PLASMA;
-        } else if (_chainId == ChainIds.MONAD) {
-            return CCIPChainIds.MONAD;
-        } else if (_chainId == ChainIds.BASE) {
-            return CCIPChainIds.BASE;
-        } else if (_chainId == ChainIds.ARBITRUM_ONE) {
-            return CCIPChainIds.ARBITRUM_ONE;
-        } else if (_chainId == ChainIds.INK) {
-            return CCIPChainIds.INK;
-        } else if (_chainId == ChainIds.LINEA) {
-            return CCIPChainIds.LINEA;
-        } else if (_chainId == ChainIds.KATANA) {
-            return CCIPChainIds.KATANA;
-        } else if (_chainId == ChainIds.MEGA_ETH) {
-            return CCIPChainIds.MEGA_ETH;
-        }
-        revert Errors.UNKNOWN_CHAIN_ID(_chainId);
-    }
-
-    /// @inheritdoc IBaseAdapter
-    function fromNativeChainId(uint256 _chainId) public view virtual override returns (uint256) {
-        if (_chainId == CCIPChainIds.ETHEREUM) {
-            return ChainIds.ETHEREUM;
-        } else if (_chainId == CCIPChainIds.AVALANCHE) {
-            return ChainIds.AVALANCHE;
-        } else if (_chainId == CCIPChainIds.POLYGON) {
-            return ChainIds.POLYGON;
-        } else if (_chainId == CCIPChainIds.BNB) {
-            return ChainIds.BNB;
-        } else if (_chainId == CCIPChainIds.OPTIMISM) {
-            return ChainIds.OPTIMISM;
-        } else if (_chainId == CCIPChainIds.CRONOS) {
-            return ChainIds.CRONOS;
-        } else if (_chainId == CCIPChainIds.HYPER_EVM) {
-            return ChainIds.HYPER_EVM;
-        } else if (_chainId == CCIPChainIds.PLASMA) {
-            return ChainIds.PLASMA;
-        } else if (_chainId == CCIPChainIds.MONAD) {
-            return ChainIds.MONAD;
-        } else if (_chainId == CCIPChainIds.BASE) {
-            return ChainIds.BASE;
-        } else if (_chainId == CCIPChainIds.ARBITRUM_ONE) {
-            return ChainIds.ARBITRUM_ONE;
-        } else if (_chainId == CCIPChainIds.INK) {
-            return ChainIds.INK;
-        } else if (_chainId == CCIPChainIds.LINEA) {
-            return ChainIds.LINEA;
-        } else if (_chainId == CCIPChainIds.KATANA) {
-            return ChainIds.KATANA;
-        } else if (_chainId == CCIPChainIds.MEGA_ETH) {
-            return ChainIds.MEGA_ETH;
-        }
-        revert Errors.UNKNOWN_NATIVE_CHAIN_ID(_chainId);
     }
 }

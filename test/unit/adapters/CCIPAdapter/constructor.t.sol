@@ -14,7 +14,9 @@ contract CCIPAdapterConstructorTest is CCIPAdapterBase {
     function test_revertsIfControllerIsZeroAddress() public {
         // `BaseAdapter`'s check, hit before any CCIP-specific validation.
         vm.expectRevert(Errors.ZERO_ADDRESS.selector);
-        new CCIPAdapter(address(0), address(router), address(0), new BaseAdapter.TrustedRemoteConfig[](0));
+        new CCIPAdapter(
+            address(0), address(router), address(0), address(registry), new BaseAdapter.TrustedRemoteConfig[](0)
+        );
     }
 
     function test_revertsIfTrustedRemoteConfigHasZeroChainId() public {
@@ -22,7 +24,7 @@ contract CCIPAdapterConstructorTest is CCIPAdapterBase {
         configs[0] = BaseAdapter.TrustedRemoteConfig({ standardChainId: 0, trustedRemote: remoteController });
 
         vm.expectRevert(Errors.INVALID_CHAIN_ID.selector);
-        new CCIPAdapter(address(controller), address(router), address(0), configs);
+        new CCIPAdapter(address(controller), address(router), address(0), address(registry), configs);
     }
 
     /// @dev The config loop is exercised with 0 or 1 entries everywhere else;
@@ -42,7 +44,8 @@ contract CCIPAdapterConstructorTest is CCIPAdapterBase {
         vm.expectEmit(true, true, true, true);
         emit TrustedRemoteSet(CHAIN_BASE, baseRemoteController);
 
-        CCIPAdapter multiAdapter = new CCIPAdapter(address(controller), address(router), address(0), configs);
+        CCIPAdapter multiAdapter =
+            new CCIPAdapter(address(controller), address(router), address(0), address(registry), configs);
 
         assertEq(multiAdapter.trustedRemote(CHAIN_ETH_MAINNET), remoteController);
         assertEq(multiAdapter.trustedRemote(CHAIN_BASE), baseRemoteController);
@@ -55,7 +58,8 @@ contract CCIPAdapterConstructorTest is CCIPAdapterBase {
         BaseAdapter.TrustedRemoteConfig[] memory configs = new BaseAdapter.TrustedRemoteConfig[](1);
         configs[0] = BaseAdapter.TrustedRemoteConfig({ standardChainId: CHAIN_BASE, trustedRemote: address(0) });
 
-        CCIPAdapter zeroRemoteAdapter = new CCIPAdapter(address(controller), address(router), address(0), configs);
+        CCIPAdapter zeroRemoteAdapter =
+            new CCIPAdapter(address(controller), address(router), address(0), address(registry), configs);
 
         assertEq(zeroRemoteAdapter.trustedRemote(CHAIN_BASE), address(0));
     }
@@ -64,7 +68,9 @@ contract CCIPAdapterConstructorTest is CCIPAdapterBase {
     ///      guard as an EOA rather than by a dedicated zero check.
     function test_revertsIfRouterIsZeroAddress() public {
         vm.expectRevert(abi.encodeWithSelector(Errors.HAS_NO_CODE.selector, address(0)));
-        new CCIPAdapter(address(controller), address(0), address(0), new BaseAdapter.TrustedRemoteConfig[](0));
+        new CCIPAdapter(
+            address(controller), address(0), address(0), address(registry), new BaseAdapter.TrustedRemoteConfig[](0)
+        );
     }
 
     /// @dev A codeless router would make every send revert on the first call
@@ -75,7 +81,9 @@ contract CCIPAdapterConstructorTest is CCIPAdapterBase {
         address eoaRouter = makeAddr("EOA_ROUTER");
 
         vm.expectRevert(abi.encodeWithSelector(Errors.HAS_NO_CODE.selector, eoaRouter));
-        new CCIPAdapter(address(controller), eoaRouter, address(0), new BaseAdapter.TrustedRemoteConfig[](0));
+        new CCIPAdapter(
+            address(controller), eoaRouter, address(0), address(registry), new BaseAdapter.TrustedRemoteConfig[](0)
+        );
     }
 
     /// @dev The fee-token guard is reached only once the router passes, so this
@@ -85,11 +93,47 @@ contract CCIPAdapterConstructorTest is CCIPAdapterBase {
         address feeToken = makeAddr("FEE_TOKEN");
 
         vm.expectRevert(abi.encodeWithSelector(Errors.HAS_NO_CODE.selector, feeToken));
-        new CCIPAdapter(address(controller), address(router), feeToken, new BaseAdapter.TrustedRemoteConfig[](0));
+        new CCIPAdapter(
+            address(controller), address(router), feeToken, address(registry), new BaseAdapter.TrustedRemoteConfig[](0)
+        );
+    }
+
+    /// @dev Same guard as the router: the zero address trivially has no code.
+    function test_revertsIfRegistryIsZeroAddress() public {
+        vm.expectRevert(abi.encodeWithSelector(Errors.HAS_NO_CODE.selector, address(0)));
+        new CCIPAdapter(
+            address(controller), address(router), address(0), address(0), new BaseAdapter.TrustedRemoteConfig[](0)
+        );
+    }
+
+    function test_revertsIfRegistryIsEOA() public {
+        address eoaRegistry = makeAddr("EOA_REGISTRY");
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.HAS_NO_CODE.selector, eoaRegistry));
+        new CCIPAdapter(
+            address(controller), address(router), address(0), eoaRegistry, new BaseAdapter.TrustedRemoteConfig[](0)
+        );
+    }
+
+    /// @dev Base constructors run first, so the revert names the registry rather
+    ///      than the router.
+    function test_registryIsRejectedBeforeTheRouter() public {
+        address eoaRegistry = makeAddr("EOA_REGISTRY");
+        address eoaRouter = makeAddr("EOA_ROUTER");
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.HAS_NO_CODE.selector, eoaRegistry));
+        new CCIPAdapter(
+            address(controller), eoaRouter, address(0), eoaRegistry, new BaseAdapter.TrustedRemoteConfig[](0)
+        );
     }
 
     function test_wiresUpConfiguredTrustedRemoteControllerAndSelector() public view {
         assertEq(adapter.trustedRemote(CHAIN_ETH_MAINNET), remoteController);
         assertEq(adapter.toNativeChainId(CHAIN_ETH_MAINNET), uint256(SEL_ETH_MAINNET));
+    }
+
+    function test_bindsTheRegistryItWasGiven() public view {
+        assertEq(address(adapter.CHAIN_ID_REGISTRY()), address(registry));
+        assertEq(address(erc20Adapter.CHAIN_ID_REGISTRY()), address(registry));
     }
 }

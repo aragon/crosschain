@@ -2,8 +2,6 @@
 
 pragma solidity ^0.8.17;
 
-import { Test } from "forge-std/Test.sol";
-
 import { Client } from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 
 import { DAO } from "@aragon/osx/core/dao/DAO.sol";
@@ -16,13 +14,15 @@ import { ICrossChainController, ICrossChainControllerEvents } from "@src/ICrossC
 import { Executor } from "@src/Executor.sol";
 import { BaseAdapter } from "@src/adapters/BaseAdapter.sol";
 import { CCIPAdapter } from "@src/adapters/CCIP/CCIPAdapter.sol";
-import { ChainIds } from "@src/lib/ChainIds.sol";
+import { ChainIdRegistry } from "@src/registry/ChainIdRegistry.sol";
 import { Permissions } from "@src/lib/Permissions.sol";
 import { Transaction, TransactionLib, TransactionState } from "@src/lib/Transaction.sol";
 
 import { CCIPRelayRouterMock } from "@mocks/ccip/CCIPRelayRouterMock.sol";
 import { ERC20Mock } from "@mocks/ERC20Mock.sol";
 import { GuardedTarget } from "@mocks/E2ETargets.sol";
+
+import { ChainsFixture } from "../fixtures/Chains.sol";
 
 /// @title CrossChainE2EBase
 /// @notice Two (optionally three) complete cross-chain stacks -- a REAL OSx
@@ -54,23 +54,40 @@ import { GuardedTarget } from "@mocks/E2ETargets.sol";
 ///      `_deliver*` helpers; none of them touch `vm.chainId` directly.
 ///
 ///      REAL CHAIN IDS AND SELECTORS. The stacks use the production values from
-///      `ChainIds`, so the adapter's hardcoded `toNativeChainId` /
-///      `fromNativeChainId` tables are exercised with the numbers production
-///      will use.
-abstract contract CrossChainE2EBase is Test, ICrossChainControllerEvents {
+///      `test/fixtures/chains.json`, seeded into a real `ChainIdRegistry` per
+///      stack, so the adapters resolve their lanes with the numbers production
+///      will use and through the same registry a real deployment binds.
+abstract contract CrossChainE2EBase is ChainsFixture, ICrossChainControllerEvents {
     using TransactionLib for Transaction;
 
     // -------------------------------------------------------------------------
     // Chains.
     // -------------------------------------------------------------------------
 
-    uint256 internal constant ORIGIN_CHAIN_ID = ChainIds.ETHEREUM;
-    uint256 internal constant DESTINATION_CHAIN_ID = ChainIds.BASE;
-    uint256 internal constant THIRD_CHAIN_ID = ChainIds.ARBITRUM_ONE;
+    uint256 internal immutable ORIGIN_CHAIN_ID;
+    uint256 internal immutable DESTINATION_CHAIN_ID;
+    uint256 internal immutable THIRD_CHAIN_ID;
 
-    uint64 internal constant ORIGIN_SELECTOR = 5009297550715157269;
-    uint64 internal constant DESTINATION_SELECTOR = 15971525489660198786;
-    uint64 internal constant THIRD_SELECTOR = 4949039107694359620;
+    uint64 internal immutable ORIGIN_SELECTOR;
+    uint64 internal immutable DESTINATION_SELECTOR;
+    uint64 internal immutable THIRD_SELECTOR;
+
+    /// @dev A real chain no stack is wired for and no registry is seeded with,
+    ///      used to exercise the unconfigured-lane paths. Real rather than
+    ///      arbitrary so the numbers stay production-shaped.
+    uint256 internal immutable UNCONFIGURED_CHAIN_ID;
+
+    constructor() {
+        ORIGIN_CHAIN_ID = chainId("ethereum");
+        DESTINATION_CHAIN_ID = chainId("base");
+        THIRD_CHAIN_ID = chainId("arbitrumOne");
+
+        ORIGIN_SELECTOR = ccipSelector("ethereum");
+        DESTINATION_SELECTOR = ccipSelector("base");
+        THIRD_SELECTOR = ccipSelector("arbitrumOne");
+
+        UNCONFIGURED_CHAIN_ID = chainId("polygon");
+    }
 
     /// @dev The failure-path gas reserve both controllers are initialized with.
     ///      See `CrossChainController.initialize`.
@@ -88,6 +105,7 @@ abstract contract CrossChainE2EBase is Test, ICrossChainControllerEvents {
     /// @param dao The OSx DAO acting as the controller's permission manager.
     /// @param controller The cross-chain hub.
     /// @param executor The executor inbound payloads run on.
+    /// @param registry The chain id table that adapter resolves lanes through.
     /// @param adapter The CCIP adapter owned by that controller.
     /// @param router The paired router mock standing in for CCIP on that chain.
     /// @param target The contract cross-chain actions operate on.
@@ -97,6 +115,7 @@ abstract contract CrossChainE2EBase is Test, ICrossChainControllerEvents {
         DAO dao;
         CrossChainController controller;
         Executor executor;
+        ChainIdRegistry registry;
         CCIPAdapter adapter;
         CCIPRelayRouterMock router;
         GuardedTarget target;
@@ -167,12 +186,20 @@ abstract contract CrossChainE2EBase is Test, ICrossChainControllerEvents {
         c.controller = _deployController(c.dao, c.executor);
         c.executor.transferOwnership(address(c.controller));
 
+        // C only ever talks to the origin, so that is the one lane it resolves.
+        c.registry = _deployRegistry(c.dao);
+        c.registry.setChainIdPair(ORIGIN_CHAIN_ID, ORIGIN_SELECTOR);
+
         c.adapter = new CCIPAdapter(
             address(c.controller),
             address(c.router),
             address(0),
+            address(c.registry),
             _trustedRemotes(ORIGIN_CHAIN_ID, address(origin.controller))
         );
+
+        // The origin gains the lane back, on ITS OWN registry.
+        origin.registry.setChainIdPair(THIRD_CHAIN_ID, THIRD_SELECTOR);
         c.target = new GuardedTarget();
 
         _label(c, "C");
@@ -227,14 +254,29 @@ abstract contract CrossChainE2EBase is Test, ICrossChainControllerEvents {
         a.executor.transferOwnership(address(a.controller));
         b.executor.transferOwnership(address(b.controller));
 
+        // One registry per chain, seeded with the remote lane. Before the
+        // adapters, which bind them in the constructor.
+        a.registry = _deployRegistry(a.dao);
+        b.registry = _deployRegistry(b.dao);
+        a.registry.setChainIdPair(_bChainId, _bSelector);
+        b.registry.setChainIdPair(_aChainId, _aSelector);
+
         // Each adapter trusts the REMOTE CONTROLLER, never the remote adapter:
         // the send path is `delegatecall`ed, so the bridge attributes the
         // message to the controller.
         a.adapter = new CCIPAdapter(
-            address(a.controller), address(a.router), _feeToken, _trustedRemotes(_bChainId, address(b.controller))
+            address(a.controller),
+            address(a.router),
+            _feeToken,
+            address(a.registry),
+            _trustedRemotes(_bChainId, address(b.controller))
         );
         b.adapter = new CCIPAdapter(
-            address(b.controller), address(b.router), _feeToken, _trustedRemotes(_aChainId, address(a.controller))
+            address(b.controller),
+            address(b.router),
+            _feeToken,
+            address(b.registry),
+            _trustedRemotes(_aChainId, address(a.controller))
         );
 
         a.target = new GuardedTarget();
@@ -251,6 +293,15 @@ abstract contract CrossChainE2EBase is Test, ICrossChainControllerEvents {
         // for inbound messages from that chain.
         _configureLane(a, _bChainId, address(b.adapter));
         _configureLane(b, _aChainId, address(a.adapter));
+    }
+
+    /// @notice The chain id table one stack's adapter resolves lanes through.
+    /// @dev This test contract holds ROOT, so it grants itself the manager
+    ///      permission and seeds directly; a real deployment goes through
+    ///      governance.
+    function _deployRegistry(DAO _dao) internal returns (ChainIdRegistry registry_) {
+        registry_ = new ChainIdRegistry(IDAO(address(_dao)));
+        _dao.grant(address(registry_), address(this), Permissions.MANAGE_CHAIN_ID_REGISTRY_PERMISSION_ID);
     }
 
     /// @notice Deploys a real `DAO` behind an ERC-1967 proxy, with this test
