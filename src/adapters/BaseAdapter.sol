@@ -4,6 +4,7 @@ pragma solidity ^0.8.8;
 
 import { Errors } from "../lib/Errors.sol";
 import { CrossChainController } from "../CrossChainController.sol";
+import { IChainIdRegistry } from "../registry/IChainIdRegistry.sol";
 
 import { IBaseAdapter } from "./IBaseAdapter.sol";
 
@@ -13,6 +14,13 @@ import { IBaseAdapter } from "./IBaseAdapter.sol";
 abstract contract BaseAdapter is IBaseAdapter {
     /// @notice The address of crosschain controller.
     address public immutable override CROSS_CHAIN_CONTROLLER;
+
+    /// @notice The chain id translation table this adapter resolves lanes through.
+    /// @dev Immutable, not stored: under the send path's `delegatecall` a storage
+    ///      read would resolve against the controller's slots. Repointing it
+    ///      requires a new adapter; the table behind it is governed. See
+    ///      {ChainIdRegistry}.
+    IChainIdRegistry public immutable CHAIN_ID_REGISTRY;
 
     /// @notice This adapter's own address, captured at construction.
     // forge-lint: disable-next-line(screaming-snake-case-immutable)
@@ -58,19 +66,49 @@ abstract contract BaseAdapter is IBaseAdapter {
     ///        CONTEXT (`address(this) == CROSS_CHAIN_CONTROLLER`); the caller
     ///        itself is never checked. It is also the account the receive path
     ///        reports to.
+    /// @param _chainIdRegistry The chain id table. Must be a deployed contract.
     /// @param _trustedRemoteConfigs The remote controllers trusted to originate
     ///        messages, per standard chain id.
-    constructor(address _crossChainController, TrustedRemoteConfig[] memory _trustedRemoteConfigs) {
+    constructor(
+        address _crossChainController,
+        address _chainIdRegistry,
+        TrustedRemoteConfig[] memory _trustedRemoteConfigs
+    ) {
         if (_crossChainController == address(0)) revert Errors.ZERO_ADDRESS();
 
+        // Also covers `address(0)`, which trivially has no code.
+        if (_chainIdRegistry.code.length == 0) revert Errors.HAS_NO_CODE(_chainIdRegistry);
+
         CROSS_CHAIN_CONTROLLER = _crossChainController;
+        CHAIN_ID_REGISTRY = IChainIdRegistry(_chainIdRegistry);
         _selfAddress = address(this);
 
         _setTrustedRemotes(_trustedRemoteConfigs);
     }
 
+    // -------------------------------------------------------------------------
+    // Chain id mapping
+    //
+    // The registry answers `0` for an unmapped id; returning that would address
+    // chain zero, so both directions revert instead. Not `virtual`: the registry
+    // is the only source of truth.
+    // -------------------------------------------------------------------------
+
     /// @inheritdoc IBaseAdapter
-    function toNativeChainId(uint256 _chainId) public view virtual override returns (uint256);
+    function toNativeChainId(uint256 _chainId) public view override returns (uint256) {
+        uint256 nativeChainId = CHAIN_ID_REGISTRY.toNative(_chainId);
+        if (nativeChainId == 0) revert Errors.UNKNOWN_CHAIN_ID(_chainId);
+
+        return nativeChainId;
+    }
+
+    /// @inheritdoc IBaseAdapter
+    function fromNativeChainId(uint256 _chainId) public view override returns (uint256) {
+        uint256 standardChainId = CHAIN_ID_REGISTRY.fromNative(_chainId);
+        if (standardChainId == 0) revert Errors.UNKNOWN_NATIVE_CHAIN_ID(_chainId);
+
+        return standardChainId;
+    }
 
     /// @notice The remote CONTROLLER trusted to originate messages for a chain.
     /// @param _chainId The standard chain id.

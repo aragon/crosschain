@@ -11,7 +11,7 @@ import { IAny2EVMMessageReceiver } from "@chainlink/contracts-ccip/contracts/int
 import { CrossChainController } from "@src/CrossChainController.sol";
 import { Executor } from "@src/Executor.sol";
 import { CCIPAdapter } from "@src/adapters/CCIP/CCIPAdapter.sol";
-import { ChainIds } from "@src/lib/ChainIds.sol";
+import { ChainIdRegistry } from "@src/registry/ChainIdRegistry.sol";
 import { Errors } from "@src/lib/Errors.sol";
 import { Permissions } from "@src/lib/Permissions.sol";
 import { TransactionLib } from "@src/lib/Transaction.sol";
@@ -135,9 +135,9 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
         baseFork = vm.createFork(baseRpc);
         forksReady = true;
 
-        origin.chainId = ChainIds.ETHEREUM;
+        origin.chainId = ORIGIN_CHAIN_ID;
         origin.selector = ORIGIN_SELECTOR;
-        destination.chainId = ChainIds.BASE;
+        destination.chainId = DESTINATION_CHAIN_ID;
         destination.selector = DESTINATION_SELECTOR;
 
         // Controllers on BOTH chains first: each adapter bakes the remote
@@ -162,20 +162,29 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
         destination.executor.transferOwnership(address(destination.controller));
         destination.target = new GuardedTarget();
 
-        // Adapters, then wiring, on each side.
+        // Registries, then adapters, then wiring, on each side -- one per fork,
+        // since code on one fork does not exist on the other. Seeded with the
+        // whole mainnet set, not just the lane in use, because
+        // `test_fork_everyMappedSelectorIsALiveLane` checks all of them.
         vm.selectFork(ethFork);
+        origin.registry = _deployRegistry(origin.dao);
+        _seedMainnetChains(origin.registry);
         origin.adapter = new CCIPAdapter(
             address(origin.controller),
             MAINNET_ROUTER,
             address(0),
+            address(origin.registry),
             _trustedRemotes(destination.chainId, address(destination.controller))
         );
 
         vm.selectFork(baseFork);
+        destination.registry = _deployRegistry(destination.dao);
+        _seedMainnetChains(destination.registry);
         destination.adapter = new CCIPAdapter(
             address(destination.controller),
             BASE_ROUTER,
             address(0),
+            address(destination.registry),
             _trustedRemotes(origin.chainId, address(origin.controller))
         );
         _grantStackPermissions(destination);
@@ -255,6 +264,7 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
             address(linkController),
             MAINNET_ROUTER,
             MAINNET_LINK,
+            address(origin.registry),
             _trustedRemotes(destination.chainId, address(destination.controller))
         );
 
@@ -405,10 +415,15 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
     ///      3. INVERSION. `fromNativeChainId` must undo `toNativeChainId`, since
     ///         the two tables are maintained by hand and separately.
     ///
+    ///      WHAT IS UNDER TEST is `test/fixtures/chains.json`, reached through
+    ///      the registry the adapter is bound to. `_chainSelectorPairs` stays an
+    ///      INDEPENDENT transcription: check 1 is worthless if both sides are
+    ///      copied from the same place.
+    ///
     ///      COVERAGE IS PINNED, NOT FLOORED. `_MAPPED_CHAIN_COUNT` is an exact
-    ///      equality: a chain silently dropping out of the table fails here
-    ///      rather than quietly shrinking what is checked. Editing `ChainIds` is
-    ///      meant to require bumping that constant -- the friction is the point.
+    ///      equality: a chain silently dropping out fails here rather than
+    ///      quietly shrinking what is checked. Editing the mainnet set is meant
+    ///      to require bumping that constant -- the friction is the point.
     function test_fork_everyMappedSelectorIsALiveLane() public withForks {
         vm.selectFork(ethFork);
 
@@ -448,7 +463,7 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
             // `isChainSupported` is false for Ethereum on the Ethereum Router,
             // and that is correct, not stale. The same-chain case is a local
             // concern, covered by `test/unit/CrossChainController/sameChainLane.t.sol`.
-            if (chainId == ChainIds.ETHEREUM) continue;
+            if (chainId == ORIGIN_CHAIN_ID) continue;
 
             assertTrue(
                 IRouterClient(MAINNET_ROUTER).isChainSupported(selector),
@@ -478,30 +493,30 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
     // Helpers.
     // -------------------------------------------------------------------------
 
-    /// @dev EXACTLY how many chains `CCIPAdapter.toNativeChainId` must map, of
-    ///      the pairs below.
+    /// @dev EXACTLY how many chains the adapter must resolve, of the pairs
+    ///      below. Matches what {_seedMainnetChains} seeds.
     ///
     ///      Deliberately an exact count, not a floor: with a floor, a chain
-    ///      quietly disappearing from the table still passes, and the suite
-    ///      silently checks less than it advertises. Bump this when `ChainIds`
-    ///      gains or loses a chain -- and when you do, add the new chain to
-    ///      `_chainSelectorPairs`, or the count will match while the new entry
-    ///      goes unchecked.
+    ///      quietly disappearing still passes, and the suite silently checks
+    ///      less than it advertises. Bump this when the mainnet set in
+    ///      `chains.json` and {_seedMainnetChains} gains or loses a chain -- and
+    ///      when you do, add the new chain to `_chainSelectorPairs`, or the
+    ///      count will match while the new entry goes unchecked.
     uint256 internal constant _MAPPED_CHAIN_COUNT = 15;
 
     /// @dev `(standard chain id, CCIP chain selector)` ground truth, transcribed
     ///      from Chainlink's `chain-selectors` registry:
     ///      https://github.com/smartcontractkit/chain-selectors/blob/main/selectors.yml
     ///
-    ///      A SUPERSET of what the adapter maps: ids absent from the adapter's
-    ///      table are skipped, so chains can be added to or removed from
-    ///      `ChainIds` without editing this, as long as the chain is listed
-    ///      here. Entries beyond the adapter's current table are candidates for
-    ///      future lanes, pre-verified so adding one is a one-line change.
+    ///      A SUPERSET of what {_seedMainnetChains} seeds: ids the registry
+    ///      does not answer for are skipped, so chains can be added to or
+    ///      removed from `chains.json` without editing this, as long as the
+    ///      chain is listed here. Entries beyond the seeded set are candidates
+    ///      for future lanes, pre-verified so adding one is a one-line change.
     ///
-    ///      These values are the AUTHORITY the adapter is checked against, so
-    ///      they must be copied from the registry rather than from
-    ///      `CCIPAdapter` -- copying from the code under test would make the
+    ///      These values are the AUTHORITY the fixture is checked against, so
+    ///      they must be copied from Chainlink's registry rather than from
+    ///      `chains.json` -- copying from the file under test would make the
     ///      ground-truth check circular and worthless.
     function _chainSelectorPairs() internal pure returns (uint256[2][] memory pairs) {
         pairs = new uint256[2][](24);
@@ -529,6 +544,32 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
         pairs[21] = [uint256(57073), 3461204551265785888]; // Ink
         pairs[22] = [uint256(59144), 4627098889531055414]; // Linea
         pairs[23] = [uint256(747474), 2459028469735686113]; // Katana
+    }
+
+    /// @dev Listed by NAME: the numbers live in `chains.json`, and duplicating
+    ///      them here would defeat the point of checking it.
+    function _seedMainnetChains(ChainIdRegistry _registry) internal {
+        string[15] memory names = [
+            "ethereum",
+            "optimism",
+            "cronos",
+            "bnb",
+            "polygon",
+            "monad",
+            "hyperEvm",
+            "megaEth",
+            "base",
+            "plasma",
+            "arbitrumOne",
+            "avalanche",
+            "ink",
+            "linea",
+            "katana"
+        ];
+
+        for (uint256 i = 0; i < names.length; i++) {
+            seedChain(_registry, names[i]);
+        }
     }
 
     /// @dev Asserts the address still exposes a CCIP `Router` `typeAndVersion`.

@@ -37,6 +37,15 @@ library Permissions {
     /// @notice Permission to unpause the message paths.
     bytes32 internal constant UNPAUSE_PERMISSION_ID = keccak256("UNPAUSE_PERMISSION");
 
+    /// @notice Permission to set, repoint or clear a chain id pair on a
+    ///         `ChainIdRegistry`.
+    /// @dev SECURITY: the registry is a trust dependency of every adapter bound
+    ///      to it. The holder can repoint a live lane at a different
+    ///      bridge-native chain in one call, sending messages to the wrong
+    ///      chain, and the binding is constructor-only. It warrants the same
+    ///      governance rigor as `MANAGE_CONTROLLER_CONFIG_PERMISSION`.
+    bytes32 internal constant MANAGE_CHAIN_ID_REGISTRY_PERMISSION_ID = keccak256("MANAGE_CHAIN_ID_REGISTRY_PERMISSION");
+
     /// @notice Permission to upgrade the controller to a new implementation.
     bytes32 internal constant UPGRADE_PLUGIN_PERMISSION_ID = keccak256("UPGRADE_PLUGIN_PERMISSION");
 

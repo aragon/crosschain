@@ -1,0 +1,23 @@
+{
+  "_comment": "Chain id <-> CCIP chain selector reference table. Was src/lib/ChainIds.sol and src/adapters/CCIP/CCIPChainIds.sol, compiled into every adapter. The adapters now resolve chain ids through a ChainIdRegistry seeded from config, so these values are test and config data rather than contract source. Selectors are the official CCIP directory values, cross-checked against lib/chainlink-local/src/ccip/Register.sol.",
+
+  "ethereum":        { "chainId": 1,        "ccipSelector": 5009297550715157269 },
+  "optimism":        { "chainId": 10,       "ccipSelector": 3734403246176062136 },
+  "cronos":          { "chainId": 25,       "ccipSelector": 1456215246176062136 },
+  "bnb":             { "chainId": 56,       "ccipSelector": 11344663589394136015 },
+  "polygon":         { "chainId": 137,      "ccipSelector": 4051577828743386545 },
+  "monad":           { "chainId": 143,      "ccipSelector": 8481857512324358265 },
+  "hyperEvm":        { "chainId": 999,      "ccipSelector": 2442541497099098535 },
+  "megaEth":         { "chainId": 4326,     "ccipSelector": 6093540873831549674 },
+  "base":            { "chainId": 8453,     "ccipSelector": 15971525489660198786 },
+  "plasma":          { "chainId": 9745,     "ccipSelector": 9335212494177455608 },
+  "arbitrumOne":     { "chainId": 42161,    "ccipSelector": 4949039107694359620 },
+  "avalanche":       { "chainId": 43114,    "ccipSelector": 6433500567565415381 },
+  "ink":             { "chainId": 57073,    "ccipSelector": 3461204551265785888 },
+  "linea":           { "chainId": 59144,    "ccipSelector": 4627098889531055414 },
+  "katana":          { "chainId": 747474,   "ccipSelector": 2459028469735686113 },
+
+  "sepolia":         { "chainId": 11155111, "ccipSelector": 16015286601757825753 },
+  "baseSepolia":     { "chainId": 84532,    "ccipSelector": 10344971235874465080 },
+  "arbitrumSepolia": { "chainId": 421614,   "ccipSelector": 3478487238524512106 }
+}

@@ -68,11 +68,14 @@ real registered OffRamp, discovered from `Router.getOffRamps()`, into the real
 highest fidelity available without the DON.
 
 `test_fork_everyMappedSelectorIsALiveLane` is the reason the fork suite earns
-its keep: `CCIPAdapter`'s chain-id/selector table is compiled in and cannot be
-fixed without a redeploy, so a wrong entry is only discoverable against a live
-Router. Its coverage is **pinned, not floored**: `_MAPPED_CHAIN_COUNT` and the
-candidate pair list are hardcoded, so adding or removing a chain fails the test
-until both are updated. That is deliberate — it forces a live-lane check on every
+its keep. What it checks is `test/fixtures/chains.json` - the reference table
+deployments transcribe their selectors from - seeded into a real
+`ChainIdRegistry` and read back through the adapter bound to it. A wrong entry
+there is only discoverable against a live Router: a non-zero selector naming the
+wrong chain resolves fine and deploys silently.
+Its coverage is **pinned, not floored**: `_MAPPED_CHAIN_COUNT`, the candidate
+pair list, and `_seedMainnetChains`'s name list are hardcoded, so adding or
+removing a chain fails the test until all three are updated. That is deliberate — it forces a live-lane check on every
 table change rather than silently skipping the new entry.
 
 ## Reading the tests

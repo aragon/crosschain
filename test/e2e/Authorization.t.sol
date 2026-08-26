@@ -6,7 +6,6 @@ import { DaoUnauthorized } from "@aragon/osx-commons-contracts/src/permission/au
 import { Action } from "@aragon/osx-commons-contracts/src/executors/IExecutor.sol";
 
 import { ICrossChainController } from "@src/ICrossChainController.sol";
-import { ChainIds } from "@src/lib/ChainIds.sol";
 import { Errors } from "@src/lib/Errors.sol";
 import { Permissions } from "@src/lib/Permissions.sol";
 
@@ -72,8 +71,8 @@ contract CrossChainAuthorizationE2ETest is CrossChainE2EBase {
     ///         succeeding against a zero adapter.
     function test_auth_forwardToUnconfiguredChainReverts() public {
         vm.prank(address(origin.dao));
-        vm.expectRevert(abi.encodeWithSelector(Errors.ADAPTER_NOT_CONFIGURED.selector, ChainIds.POLYGON));
-        origin.controller.forwardMessage(ChainIds.POLYGON, GAS_LIMIT, _emptyPayload());
+        vm.expectRevert(abi.encodeWithSelector(Errors.ADAPTER_NOT_CONFIGURED.selector, UNCONFIGURED_CHAIN_ID));
+        origin.controller.forwardMessage(UNCONFIGURED_CHAIN_ID, GAS_LIMIT, _emptyPayload());
     }
 
     /// @notice The adapter's send path refuses to run outside a `delegatecall`
@@ -229,8 +228,11 @@ contract CrossChainAuthorizationE2ETest is CrossChainE2EBase {
 
     /// @notice A selector the adapter CAN map, but for which no trusted remote
     ///         was configured, is rejected too.
+    /// @dev The seeding is the premise: without it the delivery fails one step
+    ///      earlier with `UNKNOWN_NATIVE_CHAIN_ID`.
     function test_auth_mappedSelectorWithoutATrustedRemoteIsRejected() public {
-        uint64 polygonSelector = 4051577828743386545;
+        uint64 polygonSelector = ccipSelector("polygon");
+        destination.registry.setChainIdPair(UNCONFIGURED_CHAIN_ID, polygonSelector);
 
         (bool success, bytes memory reason) = _forgeDelivery(
             destination,
@@ -243,7 +245,7 @@ contract CrossChainAuthorizationE2ETest is CrossChainE2EBase {
 
         assertFalse(success);
         assertEq(reason, abi.encodeWithSelector(Errors.REMOTE_NOT_TRUSTED.selector));
-        assertEq(destination.adapter.trustedRemote(ChainIds.POLYGON), address(0));
+        assertEq(destination.adapter.trustedRemote(UNCONFIGURED_CHAIN_ID), address(0));
     }
 
     /// @notice Sender bytes that do not decode to an address are rejected.
@@ -312,14 +314,14 @@ contract CrossChainAuthorizationE2ETest is CrossChainE2EBase {
     ///         fully cleared.
     function test_auth_partiallyConfiguredLaneIsRejected() public {
         uint256[] memory chainIds = new uint256[](1);
-        chainIds[0] = ChainIds.POLYGON;
+        chainIds[0] = UNCONFIGURED_CHAIN_ID;
 
         ICrossChainController.ChainConfig[] memory configs = new ICrossChainController.ChainConfig[](1);
         configs[0] =
             ICrossChainController.ChainConfig({ localAdapter: address(origin.adapter), remoteAdapter: address(0) });
 
         vm.prank(address(origin.dao));
-        vm.expectRevert(abi.encodeWithSelector(Errors.INCOMPLETE_ADAPTER_CONFIG.selector, ChainIds.POLYGON));
+        vm.expectRevert(abi.encodeWithSelector(Errors.INCOMPLETE_ADAPTER_CONFIG.selector, UNCONFIGURED_CHAIN_ID));
         origin.controller.updateConfig(chainIds, configs);
     }
 
