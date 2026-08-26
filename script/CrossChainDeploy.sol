@@ -11,6 +11,7 @@ import { PluginRepoFactory } from "@aragon/osx/framework/plugin/repo/PluginRepoF
 import { PluginSetupProcessor } from "@aragon/osx/framework/plugin/setup/PluginSetupProcessor.sol";
 import { PluginSetupRef, hashHelpers } from "@aragon/osx/framework/plugin/setup/PluginSetupProcessorHelpers.sol";
 import { PermissionManager } from "@aragon/osx/core/permission/PermissionManager.sol";
+import { IDAO } from "@aragon/osx-commons-contracts/src/dao/IDAO.sol";
 import { PermissionLib } from "@aragon/osx-commons-contracts/src/permission/PermissionLib.sol";
 import { IPluginSetup } from "@aragon/osx-commons-contracts/src/plugin/setup/IPluginSetup.sol";
 import { IExecutor, Action } from "@aragon/osx-commons-contracts/src/executors/IExecutor.sol";
@@ -21,7 +22,7 @@ import { CrossChainControllerSetup } from "../src/CrossChainControllerSetup.sol"
 import { CCIPAdapter } from "../src/adapters/CCIP/CCIPAdapter.sol";
 import { BaseAdapter } from "../src/adapters/BaseAdapter.sol";
 import { IBaseAdapter } from "../src/adapters/IBaseAdapter.sol";
-import { TestnetCCIPAdapter } from "./testnet/TestnetCCIPAdapter.sol";
+import { ChainIdRegistry } from "../src/registry/ChainIdRegistry.sol";
 
 /// @title CrossChainDeploy
 /// @notice Gives a consumer-owned hub DAO the whole cross-chain stack — the
@@ -70,6 +71,10 @@ abstract contract CrossChainDeploy is Script {
         address ccipRouter;
         /// @dev `address(0)` means CCIP fees are paid in the chain's native currency.
         address ccipFeeToken;
+        /// @dev CCIP addresses chains by its own selector rather than by the EVM
+        ///      chain id. Seeded into this chain's `ChainIdRegistry`, which is
+        ///      where the adapters read it back from.
+        uint256 ccipChainSelector;
         string daoSubdomain;
         bytes daoMetadata;
         address[] members;
@@ -80,6 +85,7 @@ abstract contract CrossChainDeploy is Script {
         address controller;
         address executor;
         address adapter;
+        address registry;
         /// @dev Declared by a governance hook, verified before the handover.
         address[] governors;
     }
@@ -128,6 +134,7 @@ abstract contract CrossChainDeploy is Script {
         _chain.multisigRepo = vm.parseJsonAddress(_json, string.concat(_at, ".multisigRepo"));
         _chain.ccipRouter = vm.parseJsonAddress(_json, string.concat(_at, ".ccipRouter"));
         _chain.ccipFeeToken = vm.parseJsonAddress(_json, string.concat(_at, ".ccipFeeToken"));
+        _chain.ccipChainSelector = vm.parseJsonUint(_json, string.concat(_at, ".ccipChainSelector"));
         _chain.daoSubdomain = vm.parseJsonString(_json, string.concat(_at, ".dao.subdomain"));
         _chain.daoMetadata = bytes(vm.parseJsonString(_json, string.concat(_at, ".dao.metadata")));
 
@@ -153,6 +160,7 @@ abstract contract CrossChainDeploy is Script {
         require(_chain.psp != address(0), "psp missing");
         require(_chain.crossChainRepo != address(0), "crossChainRepo missing");
         require(_chain.ccipRouter != address(0), "ccipRouter missing");
+        require(_chain.ccipChainSelector != 0, "ccipChainSelector missing");
     }
 
     /// @notice One fork per chain.
@@ -331,6 +339,7 @@ abstract contract CrossChainDeploy is Script {
 
     bytes32 internal constant ROOT_PERMISSION_ID = keccak256("ROOT_PERMISSION");
     bytes32 internal constant EXECUTE_PERMISSION_ID = keccak256("EXECUTE_PERMISSION");
+    bytes32 internal constant MANAGE_CHAIN_ID_REGISTRY_PERMISSION_ID = keccak256("MANAGE_CHAIN_ID_REGISTRY_PERMISSION");
 
     /// @notice Prepares an installation and applies it in the same transaction.
     /// @dev Why no action-bundle file: `prepareInstallation` returns the
@@ -646,7 +655,7 @@ abstract contract CrossChainDeploy is Script {
     // Phase 4 — adapters and routing
     // -------------------------------------------------------------------------
 
-    /// @notice Deploys every adapter, then wires every satellite lane.
+    /// @notice Deploys every registry and adapter, then wires every satellite lane.
     /// @dev Hub-and-spoke: the hub adapter trusts every satellite controller,
     ///      and each satellite adapter trusts only the hub. Satellites never
     ///      talk to each other.
@@ -658,6 +667,8 @@ abstract contract CrossChainDeploy is Script {
     ///      `_assertLanesWired` reads only adapter constructor state and needs
     ///      no hub permission, so it runs in full here.
     function _deployAdaptersAndRoute() internal {
+        _deployRegistries();
+
         _deployHubAdapter();
         for (uint256 i = 0; i < satellites.length; i++) {
             _deploySatelliteAdapter(i);
@@ -719,17 +730,16 @@ abstract contract CrossChainDeploy is Script {
         console.log("[4] lanes verified: trusted remotes and chain-id mappings agree on both sides");
     }
 
-    /// @dev Asks the deployed adapter, rather than trusting {_isTestnet} to agree
-    ///      with `TestnetCCIPAdapter`'s table. Those are two hand-maintained lists
-    ///      in different files, and only one of them is consulted when choosing
-    ///      which class to construct: a chain in {_isTestnet} but absent from the
-    ///      subclass's table — or a chain in neither, deployed as a production
-    ///      `CCIPAdapter` whose map is mainnet-only — produces an adapter that
-    ///      reverts `UNKNOWN_CHAIN_ID` on every send over that lane. The
-    ///      deployment completes; the lane never carries a message.
+    /// @dev Asks the deployed adapter, rather than trusting that
+    ///      {_deployRegistries} seeded what this lane needs. A missing or
+    ///      mistyped `ccipChainSelector`, a pair written to the wrong chain's
+    ///      registry, or an adapter bound to a registry that was never seeded
+    ///      all produce the same thing: an adapter that reverts
+    ///      `UNKNOWN_CHAIN_ID` on every send over that lane. The deployment
+    ///      completes; the lane never carries a message.
     ///
-    ///      One `staticcall` per lane settles it against the bytecode actually
-    ///      deployed, which no amount of list-comparing can.
+    ///      One `staticcall` per lane settles it against the registry the
+    ///      adapter is actually bound to, which reading the config back cannot.
     function _requireMapsChain(address _adapter, uint256 _chainId) private view {
         try IBaseAdapter(_adapter).toNativeChainId(_chainId) returns (uint256 native) {
             require(native != 0, "adapter maps this chain id to a zero selector");
@@ -738,6 +748,80 @@ abstract contract CrossChainDeploy is Script {
                 "adapter cannot map a chain id it must serve: the deployed adapter class has no selector for this lane, so every send over it would revert"
             );
         }
+    }
+
+    /// @notice One `ChainIdRegistry` per chain, seeded with the lanes that
+    ///         chain has to resolve.
+    /// @dev Runs BEFORE the adapters: an adapter takes its registry as a
+    ///      constructor argument and exposes no setter, so the registry has to
+    ///      exist first. Seeding could come later -- nothing reads the table
+    ///      until the first send -- but `_assertLanesWired` checks it at the end
+    ///      of this phase, which is the point of doing it here.
+    ///
+    ///      The DAO grants the permission to ITSELF, not to the deployer. The
+    ///      deployer already acts as the DAO through `EXECUTE`, which the
+    ///      handover revokes, so seeding needs no second authority and leaves
+    ///      none behind to pair with a revoke. Governance owning its own chain
+    ///      table is also the end state: adding a chain later is one DAO action,
+    ///      where it used to be a replacement adapter on both sides.
+    function _deployRegistries() private {
+        _deployRegistry(hub);
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _deployRegistry(satellites[i]);
+        }
+
+        // Mirrors the trusted-remote set exactly: the hub resolves a lane to
+        // every satellite, each satellite resolves only the hub. A pair missing
+        // here is a lane that reverts `UNKNOWN_CHAIN_ID` on every send, which
+        // `_requireMapsChain` catches before this phase returns.
+        _select(hub);
+        _broadcast();
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _setChainIdPair(hub, satellites[i].chainId, satellites[i].ccipChainSelector);
+        }
+        vm.stopBroadcast();
+
+        for (uint256 i = 0; i < satellites.length; i++) {
+            _select(satellites[i]);
+            _broadcast();
+            _setChainIdPair(satellites[i], hub.chainId, hub.ccipChainSelector);
+            vm.stopBroadcast();
+        }
+    }
+
+    function _deployRegistry(ChainCfg storage _chain) private {
+        _select(_chain);
+        _broadcast();
+
+        // CREATE2 for the reason spelled out in {_newAdapter}: an address
+        // derived from a deployer nonce is not reproducible on a resumed run.
+        bytes32 salt = keccak256(abi.encode(_chain.chainId, _chain.dao, "ChainIdRegistry"));
+        _chain.registry = address(new ChainIdRegistry{ salt: salt }(IDAO(_chain.dao)));
+
+        // Nothing holds this permission until it is granted, so a registry is
+        // inert until here. The grant targets the REGISTRY (`where`) and names
+        // the DAO (`who`): the registry authorizes against its DAO's permission
+        // manager, so this is the DAO permitting itself to write its own table.
+        _daoAction(
+            _chain,
+            abi.encodeCall(
+                PermissionManager.grant, (_chain.registry, _chain.dao, MANAGE_CHAIN_ID_REGISTRY_PERMISSION_ID)
+            )
+        );
+
+        vm.stopBroadcast();
+        console.log("[4] chain id registry", _chain.registry);
+    }
+
+    /// @dev Targets the REGISTRY, not the DAO: `setChainIdPair` is gated by
+    ///      `MANAGE_CHAIN_ID_REGISTRY_PERMISSION`, which {_deployRegistry}
+    ///      granted to the DAO, so the DAO is the caller and the registry the
+    ///      callee. Caller owns `_select` and `_broadcast`.
+    function _setChainIdPair(ChainCfg storage _chain, uint256 _standardChainId, uint256 _nativeChainId) private {
+        _daoActionTo(
+            _chain, _chain.registry, abi.encodeCall(ChainIdRegistry.setChainIdPair, (_standardChainId, _nativeChainId))
+        );
+        console.log("[4] chain id pair", _standardChainId, _nativeChainId);
     }
 
     function _deployHubAdapter() private {
@@ -771,15 +855,10 @@ abstract contract CrossChainDeploy is Script {
     }
 
     /// @notice The adapter for the chain in scope.
-    /// @dev `CCIPAdapter`'s chain table is mainnet-only by design: it is audited
-    ///      production source. `TestnetCCIPAdapter` (in `script/`, outside audit
-    ///      scope) overrides just that table, both directions.
-    ///
-    ///      The kit picks between them, so a consumer writes no adapter code.
-    ///      The cost: a testnet rehearsal exercises the subclass, not the
-    ///      shipping contract. Only the id/selector lookup differs —
-    ///      trusted-remote checks, send and receive paths and fee handling are
-    ///      the production contract either way.
+    /// @dev One class on every chain, mainnet or testnet. The chain table lives
+    ///      in the registry deployed by {_deployRegistries}, so a testnet
+    ///      rehearsal now exercises the shipping contract rather than a
+    ///      `script/`-local subclass with a different lookup baked in.
     function _newAdapter(ChainCfg storage _chain, BaseAdapter.TrustedRemoteConfig[] memory _trusted)
         private
         returns (address)
@@ -801,21 +880,13 @@ abstract contract CrossChainDeploy is Script {
         // somewhere new rather than colliding.
         bytes32 salt = keccak256(abi.encode(_chain.chainId, _chain.controller));
 
-        if (_isTestnet(_chain.chainId)) {
-            return address(
-                new TestnetCCIPAdapter{
-                    salt: salt
-                }(_chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted)
-            );
-        }
-        return
-            address(new CCIPAdapter{ salt: salt }(_chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _trusted));
-    }
+        require(_chain.registry != address(0), "chain id registry missing: deploy registries first");
 
-    /// @dev Must match `TestnetCCIPAdapter`'s table. A chain listed here but not
-    ///      there gets an adapter that reverts `UNKNOWN_CHAIN_ID` on every lane.
-    function _isTestnet(uint256 _chainId) private pure returns (bool) {
-        return _chainId == 11_155_111 || _chainId == 84_532 || _chainId == 421_614;
+        return address(
+            new CCIPAdapter{
+                salt: salt
+            }(_chain.controller, _chain.ccipRouter, _chain.ccipFeeToken, _chain.registry, _trusted)
+        );
     }
 
     function _routeHub() private {
@@ -1259,6 +1330,7 @@ abstract contract CrossChainDeploy is Script {
         console.log("  controller", _chain.controller);
         console.log("  executor  ", _chain.executor);
         console.log("  adapter   ", _chain.adapter);
+        console.log("  registry  ", _chain.registry);
         for (uint256 i = 0; i < _chain.governors.length; i++) {
             console.log("  governor  ", _chain.governors[i]);
         }

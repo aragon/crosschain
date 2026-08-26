@@ -11,7 +11,7 @@ import { ICrossChainController, ICrossChainControllerEvents } from "@src/ICrossC
 import { Executor } from "@src/Executor.sol";
 import { CCIPAdapter } from "@src/adapters/CCIP/CCIPAdapter.sol";
 import { BaseAdapter } from "@src/adapters/BaseAdapter.sol";
-import { ChainIds } from "@src/lib/ChainIds.sol";
+import { ChainIdRegistry } from "@src/registry/ChainIdRegistry.sol";
 import { Errors } from "@src/lib/Errors.sol";
 import { Permissions } from "@src/lib/Permissions.sol";
 import { Transaction, TransactionLib, TransactionState } from "@src/lib/Transaction.sol";
@@ -24,6 +24,8 @@ import { CCIPRelayRouterMock } from "@mocks/ccip/CCIPRelayRouterMock.sol";
 import { CounterTarget } from "@mocks/CounterTarget.sol";
 import { CrossChainControllerDAOMock } from "@mocks/CrossChainControllerDAOMock.sol";
 import { FlakyTarget } from "@mocks/FlakyTarget.sol";
+
+import { ChainsFixture } from "../fixtures/Chains.sol";
 
 /// @title CrossChainRoundTripTest
 /// @notice End-to-end tests that carry a message across a full CCIP lane:
@@ -65,19 +67,27 @@ import { FlakyTarget } from "@mocks/FlakyTarget.sol";
 ///      `_deliver*` helpers; none of them touch `vm.chainId` directly.
 ///
 ///      REAL CHAIN IDS AND SELECTORS. The stacks use the production values from
-///      `ChainIds`, so the adapter's hardcoded `toNativeChainId` /
-///      `fromNativeChainId` tables are exercised with the numbers production
-///      will use.
-contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
+///      `test/fixtures/chains.json`, seeded into a real `ChainIdRegistry` per
+///      stack, so the adapters resolve their lanes with the numbers production
+///      will use and through the same registry a real deployment binds.
+contract CrossChainRoundTripTest is ChainsFixture, ICrossChainControllerEvents {
     // -------------------------------------------------------------------------
     // Chains.
     // -------------------------------------------------------------------------
 
-    uint256 internal constant ORIGIN_CHAIN_ID = ChainIds.ETHEREUM;
-    uint256 internal constant DESTINATION_CHAIN_ID = ChainIds.BASE;
+    uint256 internal immutable ORIGIN_CHAIN_ID;
+    uint256 internal immutable DESTINATION_CHAIN_ID;
 
-    uint64 internal constant ORIGIN_SELECTOR = 5009297550715157269;
-    uint64 internal constant DESTINATION_SELECTOR = 15971525489660198786;
+    uint64 internal immutable ORIGIN_SELECTOR;
+    uint64 internal immutable DESTINATION_SELECTOR;
+
+    constructor() {
+        ORIGIN_CHAIN_ID = chainId("ethereum");
+        DESTINATION_CHAIN_ID = chainId("base");
+
+        ORIGIN_SELECTOR = ccipSelector("ethereum");
+        DESTINATION_SELECTOR = ccipSelector("base");
+    }
 
     /// @dev The failure-path gas reserve both controllers are initialized
     ///      with. See `CrossChainController.initialize`.
@@ -101,6 +111,7 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         CrossChainControllerDAOMock dao;
         CrossChainController controller;
         Executor executor;
+        ChainIdRegistry registry;
         CCIPAdapter adapter;
         CCIPRelayRouterMock router;
         CounterTarget target;
@@ -563,6 +574,13 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         a.executor.transferOwnership(address(a.controller));
         b.executor.transferOwnership(address(b.controller));
 
+        // One registry per chain, seeded with the remote lane it has to
+        // resolve. Before the adapters, which bind them in the constructor.
+        a.registry = _deployRegistry(a.dao);
+        b.registry = _deployRegistry(b.dao);
+        a.registry.setChainIdPair(DESTINATION_CHAIN_ID, DESTINATION_SELECTOR);
+        b.registry.setChainIdPair(ORIGIN_CHAIN_ID, ORIGIN_SELECTOR);
+
         // Each adapter trusts the REMOTE CONTROLLER, never the remote adapter:
         // the send path is `delegatecall`ed, so the bridge attributes the
         // message to the controller.
@@ -570,12 +588,14 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
             address(a.controller),
             address(a.router),
             address(0),
+            address(a.registry),
             _trustedRemotes(DESTINATION_CHAIN_ID, address(b.controller))
         );
         b.adapter = new CCIPAdapter(
             address(b.controller),
             address(b.router),
             address(0),
+            address(b.registry),
             _trustedRemotes(ORIGIN_CHAIN_ID, address(a.controller))
         );
 
@@ -593,6 +613,16 @@ contract CrossChainRoundTripTest is Test, ICrossChainControllerEvents {
         // for inbound messages from that chain.
         _configureLane(a, DESTINATION_CHAIN_ID, address(b.adapter));
         _configureLane(b, ORIGIN_CHAIN_ID, address(a.adapter));
+    }
+
+    /// @dev Deployed BEFORE the adapter that binds it: constructor-only, no
+    ///      setter. The mock DAO grants this test the manager permission
+    ///      directly; a real deployment routes the same call through governance.
+    function _deployRegistry(CrossChainControllerDAOMock _dao) internal returns (ChainIdRegistry registry_) {
+        registry_ = new ChainIdRegistry(IDAO(address(_dao)));
+        _dao.setHasPermission(
+            address(registry_), address(this), Permissions.MANAGE_CHAIN_ID_REGISTRY_PERMISSION_ID, true
+        );
     }
 
     function _deployController(CrossChainControllerDAOMock _dao, Executor _executor)

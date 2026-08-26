@@ -12,7 +12,6 @@ import { Transaction, TransactionLib } from "@src/lib/Transaction.sol";
 import { ERC20Mock } from "@mocks/ERC20Mock.sol";
 import { CCIPRouterMock } from "@mocks/ccip/CCIPRouterMock.sol";
 import { TrustedRemoteWritingCCIPAdapter } from "@mocks/ccip/TrustedRemoteWritingCCIPAdapter.sol";
-import { OversizedSelectorCCIPAdapter } from "@mocks/ccip/OversizedSelectorCCIPAdapter.sol";
 
 contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
     // -------------------------------------------------------------------------
@@ -46,18 +45,21 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
         delegateCallerMock.delegateCall{ value: 1 ether }(address(isolationAdapter), data);
     }
 
-    /// @dev `toNativeChainId` is `virtual`; the built-in map only ever returns
-    ///      `uint64`-sized CCIP selectors, so the `SafeCast.toUint64` on the
-    ///      send path can only trip via a subclass whose map returns a wider
-    ///      value. The cast must revert rather than silently truncate the
-    ///      selector and dispatch to the wrong lane.
+    /// @dev The registry stores a `uint256`, but a CCIP selector is a `uint64`.
+    ///      Nothing on the write path narrows it, so whoever holds
+    ///      `MANAGE_CHAIN_ID_REGISTRY_PERMISSION` can seed a value the cast
+    ///      cannot represent -- a fat-fingered selector, most likely. The cast
+    ///      must revert rather than silently truncate it and dispatch to
+    ///      whatever lane the low 64 bits happen to name.
+    ///
+    ///      Reachable through config now; before the registry it took a
+    ///      subclass with a wider map, which is why that mock is gone.
     function test_revertsIfNativeChainIdDoesNotFitUint64() public {
-        OversizedSelectorCCIPAdapter oversizedAdapter =
-            new OversizedSelectorCCIPAdapter(address(controller), address(router));
-        _registerLane(CHAIN_ETH_MAINNET, address(oversizedAdapter), remoteAdapter);
+        seedPair(registry, CHAIN_SEPOLIA, uint256(type(uint64).max) + 1);
+        _registerLane(CHAIN_SEPOLIA, address(adapter), remoteAdapter);
 
         vm.expectRevert("SafeCast: value doesn't fit in 64 bits");
-        controller.forwardMessage(CHAIN_ETH_MAINNET, 200_000, "");
+        controller.forwardMessage(CHAIN_SEPOLIA, 200_000, "");
 
         assertEq(router.ccipSendCallCount(), 0, "no message may be dispatched with a truncated selector");
     }
@@ -296,7 +298,11 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
         CCIPRouterMock routerB = new CCIPRouterMock();
         ERC20Mock feeTokenB = new ERC20Mock("Fee Token B", "FEEB");
         CCIPAdapter adapterB = new CCIPAdapter(
-            address(controller), address(routerB), address(feeTokenB), new BaseAdapter.TrustedRemoteConfig[](0)
+            address(controller),
+            address(routerB),
+            address(feeTokenB),
+            address(registry),
+            new BaseAdapter.TrustedRemoteConfig[](0)
         );
 
         _registerLane(CHAIN_ETH_MAINNET, address(erc20Adapter), remoteAdapter); // -> router (lane A)
@@ -381,13 +387,13 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
         assertEq(
             adapter.toNativeChainId(CHAIN_ETH_MAINNET),
             nativeChainIdBefore,
-            "adapter's own selector-map storage touched by send"
+            "the chain id the adapter resolves must be unchanged by a send"
         );
     }
 
     function test_sendPathWritingTrustedRemotes_corruptsControllerStorageNotTheAdapters() public {
         TrustedRemoteWritingCCIPAdapter statefulAdapter =
-            new TrustedRemoteWritingCCIPAdapter(address(controller), address(router));
+            new TrustedRemoteWritingCCIPAdapter(address(controller), address(router), address(registry));
         _registerLane(CHAIN_ETH_MAINNET, address(statefulAdapter), remoteAdapter);
 
         uint256 feeAmount = 0.01 ether;
@@ -422,7 +428,11 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
     function test_feeTokenRotation_requiresDeployingANewAdapterAndRepointingTheLane() public {
         ERC20Mock newFeeToken = new ERC20Mock("New Fee Token", "NEWFEE");
         CCIPAdapter newAdapter = new CCIPAdapter(
-            address(controller), address(router), address(newFeeToken), new BaseAdapter.TrustedRemoteConfig[](0)
+            address(controller),
+            address(router),
+            address(newFeeToken),
+            address(registry),
+            new BaseAdapter.TrustedRemoteConfig[](0)
         );
 
         // Old lane, old fee token: works today.

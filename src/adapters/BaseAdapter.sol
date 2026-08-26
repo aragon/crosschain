@@ -4,6 +4,7 @@ pragma solidity ^0.8.8;
 
 import { Errors } from "../lib/Errors.sol";
 import { CrossChainController } from "../CrossChainController.sol";
+import { IChainIdRegistry } from "../registry/IChainIdRegistry.sol";
 
 import { IBaseAdapter } from "./IBaseAdapter.sol";
 
@@ -13,6 +14,19 @@ import { IBaseAdapter } from "./IBaseAdapter.sol";
 abstract contract BaseAdapter is IBaseAdapter {
     /// @notice The address of crosschain controller.
     address public immutable override CROSS_CHAIN_CONTROLLER;
+
+    /// @notice The chain id translation table this adapter resolves its lanes
+    ///         through.
+    /// @dev Immutable rather than stored, for the same reason as
+    ///      `CCIPAdapter.FEE_TOKEN`: the send path runs under `delegatecall`
+    ///      from the controller, where a storage read would resolve against the
+    ///      controller's slots. An immutable is baked into this adapter's
+    ///      bytecode and reads correctly in either context.
+    ///
+    ///      One registry per adapter, and repointing it means a new adapter -
+    ///      which is the trade for making the TABLE governable without one. See
+    ///      {IChainIdRegistry} for what that hands to the permission holder.
+    IChainIdRegistry public immutable CHAIN_ID_REGISTRY;
 
     /// @notice This adapter's own address, captured at construction.
     // forge-lint: disable-next-line(screaming-snake-case-immutable)
@@ -58,19 +72,54 @@ abstract contract BaseAdapter is IBaseAdapter {
     ///        CONTEXT (`address(this) == CROSS_CHAIN_CONTROLLER`); the caller
     ///        itself is never checked. It is also the account the receive path
     ///        reports to.
+    /// @param _chainIdRegistry The chain id table this adapter resolves lanes
+    ///        through. Must be a deployed contract; the binding has no setter.
     /// @param _trustedRemoteConfigs The remote controllers trusted to originate
     ///        messages, per standard chain id.
-    constructor(address _crossChainController, TrustedRemoteConfig[] memory _trustedRemoteConfigs) {
+    constructor(
+        address _crossChainController,
+        address _chainIdRegistry,
+        TrustedRemoteConfig[] memory _trustedRemoteConfigs
+    ) {
         if (_crossChainController == address(0)) revert Errors.ZERO_ADDRESS();
 
+        // Also covers `address(0)`, which trivially has no code. An adapter
+        // bound to a codeless registry reverts on every lane, in both
+        // directions, and cannot be repaired.
+        if (_chainIdRegistry.code.length == 0) revert Errors.HAS_NO_CODE(_chainIdRegistry);
+
         CROSS_CHAIN_CONTROLLER = _crossChainController;
+        CHAIN_ID_REGISTRY = IChainIdRegistry(_chainIdRegistry);
         _selfAddress = address(this);
 
         _setTrustedRemotes(_trustedRemoteConfigs);
     }
 
+    // -------------------------------------------------------------------------
+    // Chain id mapping
+    //
+    // Both directions are resolved by the bound registry, and both revert on an
+    // unmapped id: `IChainIdRegistry` answers `0`, but returning that here would
+    // silently address chain zero rather than failing. Neither is `virtual` --
+    // the registry is the only source of truth by construction, so a subclass
+    // cannot quietly reintroduce a second table.
+    // -------------------------------------------------------------------------
+
     /// @inheritdoc IBaseAdapter
-    function toNativeChainId(uint256 _chainId) public view virtual override returns (uint256);
+    function toNativeChainId(uint256 _chainId) public view override returns (uint256) {
+        uint256 nativeChainId = CHAIN_ID_REGISTRY.toNative(_chainId);
+        if (nativeChainId == 0) revert Errors.UNKNOWN_CHAIN_ID(_chainId);
+
+        return nativeChainId;
+    }
+
+    /// @inheritdoc IBaseAdapter
+    function fromNativeChainId(uint256 _chainId) public view override returns (uint256) {
+        uint256 standardChainId = CHAIN_ID_REGISTRY.fromNative(_chainId);
+        if (standardChainId == 0) revert Errors.UNKNOWN_NATIVE_CHAIN_ID(_chainId);
+
+        return standardChainId;
+    }
 
     /// @notice The remote CONTROLLER trusted to originate messages for a chain.
     /// @param _chainId The standard chain id.

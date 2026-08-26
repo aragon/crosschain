@@ -15,6 +15,12 @@ import { CrossChainControllerSetup } from "@src/CrossChainControllerSetup.sol";
 import { Executor } from "@src/Executor.sol";
 import { Permissions } from "@src/lib/Permissions.sol";
 import { CrossChainDeployConformance, Deployed } from "./CrossChainDeployConformance.sol";
+import { ChainIdRegistry } from "@src/registry/ChainIdRegistry.sol";
+import { IBaseAdapter } from "@src/adapters/IBaseAdapter.sol";
+import { BaseAdapter } from "@src/adapters/BaseAdapter.sol";
+import { Errors } from "@src/lib/Errors.sol";
+import { IExecutor, Action } from "@aragon/osx-commons-contracts/src/executors/IExecutor.sol";
+import { ChainsFixture } from "../fixtures/Chains.sol";
 
 /// @dev The two `Addresslist` reads the zero-address evidence test needs.
 ///      Declared locally rather than imported so the test does not depend on
@@ -37,6 +43,7 @@ contract KitHarness is CrossChainDeploy {
 
     function addChain(
         uint256 _chainId,
+        uint256 _ccipChainSelector,
         address _daoFactory,
         address _psp,
         address _pluginRepoFactory,
@@ -55,6 +62,7 @@ contract KitHarness is CrossChainDeploy {
         c.crossChainRepo = _crossChainRepo;
         c.multisigRepo = _multisigRepo;
         c.ccipRouter = _ccipRouter;
+        c.ccipChainSelector = _ccipChainSelector;
         c.minApprovals = 1;
         c.members.push(address(0xA11CE));
     }
@@ -148,12 +156,12 @@ contract KitHarness is CrossChainDeploy {
 
     /// @dev The narrow shape the conformance suite takes.
     function hubDeployed() external view returns (Deployed memory) {
-        return Deployed(hub.dao, hub.controller, hub.executor, hub.adapter, hub.governors);
+        return Deployed(hub.dao, hub.controller, hub.executor, hub.adapter, hub.registry, hub.governors);
     }
 
     function satDeployed(uint256 _i) external view returns (Deployed memory) {
         ChainCfg storage c = satellites[_i];
-        return Deployed(c.dao, c.controller, c.executor, c.adapter, c.governors);
+        return Deployed(c.dao, c.controller, c.executor, c.adapter, c.registry, c.governors);
     }
 
     function clearSatelliteGovernors(uint256 _i) external {
@@ -235,7 +243,7 @@ contract KitHarness is CrossChainDeploy {
 ///      of relying on its consumers'.
 ///
 ///      Skips without RPCs. Public endpoints are fine.
-contract CrossChainDeployKitTest is CrossChainDeployConformance {
+contract CrossChainDeployKitTest is CrossChainDeployConformance, ChainsFixture {
     // Real OSx 1.4 deployments.
     address internal constant SEP_DAO_FACTORY = 0xB815791c233807D39b7430127975244B36C19C8e;
     address internal constant SEP_PSP = 0xC24188a73dc09aA7C721f96Ad8857B469C01dC9f;
@@ -252,11 +260,24 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
     address internal constant SEP_ROUTER = 0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59;
     address internal constant BASESEP_ROUTER = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
 
-    // Local, because maps mainnets only -- deliberately, it is
-    // audited production source.
-    uint256 internal constant SEPOLIA = 11_155_111;
-    uint256 internal constant BASE_SEPOLIA = 84_532;
-    uint256 internal constant ETHEREUM = 1;
+    // From `test/fixtures/chains.json`, the same file a topology config is
+    // written against. `immutable` rather than `constant`: a JSON read is a
+    // call, not a compile-time expression.
+    uint256 internal immutable SEPOLIA;
+    uint256 internal immutable BASE_SEPOLIA;
+    uint256 internal immutable ETHEREUM;
+
+    uint256 internal immutable SEPOLIA_SELECTOR;
+    uint256 internal immutable BASE_SEPOLIA_SELECTOR;
+
+    constructor() {
+        SEPOLIA = chainId("sepolia");
+        BASE_SEPOLIA = chainId("baseSepolia");
+        ETHEREUM = chainId("ethereum");
+
+        SEPOLIA_SELECTOR = ccipSelector("sepolia");
+        BASE_SEPOLIA_SELECTOR = ccipSelector("baseSepolia");
+    }
 
     uint256 internal constant DEPLOYER_KEY = uint256(keccak256("crosschain.kit.test"));
 
@@ -279,9 +300,19 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         address sepRepo = _publishCrossChainRepo(hubFork, SEP_REPO_FACTORY, deployer);
         address baseRepo = _publishCrossChainRepo(satFork, BASESEP_REPO_FACTORY, deployer);
 
-        kit.addChain(SEPOLIA, SEP_DAO_FACTORY, SEP_PSP, SEP_REPO_FACTORY, sepRepo, SEP_MULTISIG_REPO, SEP_ROUTER);
+        kit.addChain(
+            SEPOLIA,
+            SEPOLIA_SELECTOR,
+            SEP_DAO_FACTORY,
+            SEP_PSP,
+            SEP_REPO_FACTORY,
+            sepRepo,
+            SEP_MULTISIG_REPO,
+            SEP_ROUTER
+        );
         kit.addChain(
             BASE_SEPOLIA,
+            BASE_SEPOLIA_SELECTOR,
             BASESEP_DAO_FACTORY,
             BASESEP_PSP,
             BASESEP_REPO_FACTORY,
@@ -495,6 +526,72 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         assertLaneWired(kit.satCfg(0).controller, SEPOLIA, kit.satCfg(0).adapter, kit.hubCfg().adapter);
     }
 
+    /// @notice Each chain's registry carries the REMOTE lane, read back through
+    ///         the adapter that is bound to it.
+    /// @dev The kit's own `_requireMapsChain` covers the forward direction, so
+    ///         what this adds is the inverse -- the receive path resolves an
+    ///         inbound selector back to the origin chain id -- and the negative:
+    ///         a chain nothing seeded still reverts, so a passing forward check
+    ///         is not just "the registry answers everything".
+    function test_fullRun_seedsEachChainIdRegistryWithItsRemoteLane() public {
+        _run();
+
+        kit.selectHub();
+        IBaseAdapter hubAdapter = IBaseAdapter(kit.hubCfg().adapter);
+        assertEq(hubAdapter.toNativeChainId(BASE_SEPOLIA), BASE_SEPOLIA_SELECTOR, "hub -> satellite selector");
+        assertEq(hubAdapter.fromNativeChainId(BASE_SEPOLIA_SELECTOR), BASE_SEPOLIA, "hub inverts the satellite lane");
+
+        // Hub-and-spoke: the hub resolves satellites, never itself.
+        vm.expectRevert(abi.encodeWithSelector(Errors.UNKNOWN_CHAIN_ID.selector, SEPOLIA));
+        hubAdapter.toNativeChainId(SEPOLIA);
+
+        kit.selectSatellite(0);
+        IBaseAdapter satAdapter = IBaseAdapter(kit.satCfg(0).adapter);
+        assertEq(satAdapter.toNativeChainId(SEPOLIA), SEPOLIA_SELECTOR, "satellite -> hub selector");
+        assertEq(satAdapter.fromNativeChainId(SEPOLIA_SELECTOR), SEPOLIA, "satellite inverts the hub lane");
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.UNKNOWN_CHAIN_ID.selector, ETHEREUM));
+        satAdapter.toNativeChainId(ETHEREUM);
+    }
+
+    /// @notice Governance can add a chain to a live deployment without touching
+    ///         the adapters -- the reason the registry exists.
+    /// @dev Runs AFTER the handover, as the satellite's governor, so it proves
+    ///      the authority survives the kit letting go rather than relying on
+    ///      leftover deployer permissions.
+    function test_afterHandover_governanceCanAddAChainWithoutANewAdapter() public {
+        _run();
+
+        kit.selectSatellite(0);
+        IBaseAdapter satAdapter = IBaseAdapter(kit.satCfg(0).adapter);
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.UNKNOWN_CHAIN_ID.selector, ETHEREUM));
+        satAdapter.toNativeChainId(ETHEREUM);
+
+        address governor = kit.satCfg(0).governors[0];
+        address satDao = kit.satCfg(0).dao;
+
+        Action[] memory actions = new Action[](1);
+        actions[0].to = kit.satCfg(0).registry;
+        actions[0].data = abi.encodeCall(ChainIdRegistry.setChainIdPair, (ETHEREUM, ccipSelector("ethereum")));
+
+        // `satDao` is read BEFORE the prank on purpose: `vm.prank` applies to
+        // the next external call, and `kit.satCfg(0)` is one.
+        vm.prank(governor);
+        IExecutor(satDao).execute(bytes32(0), actions, 0);
+
+        assertEq(
+            satAdapter.toNativeChainId(ETHEREUM),
+            ccipSelector("ethereum"),
+            "governance could not add a chain to its own live deployment"
+        );
+        assertEq(
+            address(BaseAdapter(address(satAdapter)).CHAIN_ID_REGISTRY()),
+            kit.satCfg(0).registry,
+            "the adapter must be the same one: adding a chain may not require replacing it"
+        );
+    }
+
     /// @notice The kit's JSON loader fills the same fields the harness sets by
     ///         hand, so the zero-code path reaches the same deployment.
     function test_topologyLoadsFromJson() public {
@@ -507,6 +604,8 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance {
         assertEq(fresh.satCfg(0).multisigRepo, BASESEP_MULTISIG_REPO, "satellite multisig repo");
         assertEq(fresh.satCfg(0).minApprovals, 1, "threshold");
         assertEq(fresh.hubCfg().members.length, 1, "roster");
+        assertEq(fresh.hubCfg().ccipChainSelector, SEPOLIA_SELECTOR, "hub selector");
+        assertEq(fresh.satCfg(0).ccipChainSelector, BASE_SEPOLIA_SELECTOR, "satellite selector");
     }
 
     // -------------------------------------------------------------------------

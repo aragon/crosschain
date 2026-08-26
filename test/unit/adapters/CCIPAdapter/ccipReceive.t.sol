@@ -6,7 +6,6 @@ import { CCIPAdapterBase } from "./Base.t.sol";
 import { Client } from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
 import { CCIPAdapter } from "@src/adapters/CCIP/CCIPAdapter.sol";
 import { Errors } from "@src/lib/Errors.sol";
-import { ChainIds } from "@src/lib/ChainIds.sol";
 import { Transaction, TransactionLib } from "@src/lib/Transaction.sol";
 
 contract CCIPAdapterCcipReceiveTest is CCIPAdapterBase {
@@ -86,9 +85,11 @@ contract CCIPAdapterCcipReceiveTest is CCIPAdapterBase {
     // -------------------------------------------------------------------------
 
     /// @dev Proves that reaching the RECEIVE path under `delegatecall` reverts.
-    ///      The native<->standard map is hardcoded pure logic, so no storage is
-    ///      needed for it -- `SEL_ETH_MAINNET` resolves to `ChainIds.ETHEREUM`
-    ///      on its own. The ONLY storage read on the way to `_forwardMessage` is
+    ///      The native<->standard map needs no storage of the adapter's:
+    ///      `CHAIN_ID_REGISTRY` is an immutable baked into the ADAPTER's
+    ///      bytecode, which is the code running here, so `SEL_ETH_MAINNET`
+    ///      still resolves to `CHAIN_ETH_MAINNET` under `delegatecall`. The
+    ///      ONLY storage read on the way to `_forwardMessage` is
     ///      `_trustedRemotes[originChainId]` (slot 0), which under `delegatecall`
     ///      resolves against `delegateCallerMock`'s own (otherwise empty)
     ///      storage. We plant a matching trusted-remote entry there via
@@ -96,8 +97,8 @@ contract CCIPAdapterCcipReceiveTest is CCIPAdapterBase {
     ///      reaches `_forwardMessage`, tripping `DELEGATE_CALL_FORBIDDEN`
     ///      specifically rather than `REMOTE_NOT_TRUSTED` first.
     function test_delegatecalledIntoAdapter_revertsWithDelegateCallForbidden() public {
-        // `fromNativeChainId(SEL_ETH_MAINNET)` is pure and returns this.
-        uint256 originChainId = ChainIds.ETHEREUM;
+        // What `fromNativeChainId(SEL_ETH_MAINNET)` resolves to off the registry.
+        uint256 originChainId = CHAIN_ETH_MAINNET;
         address fakeTrustedSender = makeAddr("fakeTrustedSenderForDelegatecallProbe");
 
         // `_trustedRemotes[originChainId] = fakeTrustedSender` at slot 0,

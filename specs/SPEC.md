@@ -243,8 +243,30 @@ itself so it can read its own trusted-remote map.
 | Function | Access | What it does |
 |---|---|---|
 | `sendMessage(receiver, dstChainId, gasLimit, message)` | `onlyDelegatecallFromController` | Sends over the bridge. Because it is delegatecalled, the fee comes from the **controller's** balance and the bridge attributes the message to the **controller's** address. Returns `(messageId, fee)`. |
-| `toNativeChainId(chainId)` / `fromNativeChainId(chainId)` | view | Translates between standard EVM chain ids and the bridge's own encoding. Both **must revert** on unmapped ids - returning `0` would silently address the wrong lane. |
+| `toNativeChainId(chainId)` / `fromNativeChainId(chainId)` | view | Translates between standard EVM chain ids and the bridge's own encoding, by reading the `ChainIdRegistry` the adapter is bound to. Both **must revert** on unmapped ids - the registry answers `0`, and returning that would silently address the wrong lane. Implemented once on `BaseAdapter` and not `virtual`, so no adapter can quietly substitute a second table. |
 | `_forwardMessage(messageId, payload, originChainId)` | internal | Hands an authenticated inbound message to the controller via a plain `CALL`. Guarded by an `address(this) == _selfAddress` check, so it can never run under `delegatecall`. |
+
+### `ChainIdRegistry`
+
+The chain-id table is a contract, not bytecode. **One registry per adapter protocol** - CCIP
+addresses chains by its own selector, another bridge by something else, and the two tables are
+unrelated - and the adapter binds its registry as an `immutable` at construction, so the send path
+resolves it correctly under `delegatecall`.
+
+The trade is deliberate: the **table** becomes a governance call, the **binding** does not. Adding
+a chain to a live deployment is one `setChainIdPair`, where it used to mean a replacement adapter
+on both sides plus a governance round on each. Repointing an adapter at a different registry still
+means a new adapter.
+
+| Function | Access | What it does |
+|---|---|---|
+| `toNative(standardChainId)` / `fromNative(nativeChainId)` | view | The two directions of the table. Both answer `0` for an unmapped id; turning that into a revert is the adapter's job, not the registry's. |
+| `setChainIdPair(standardChainId, nativeChainId)` | `MANAGE_CHAIN_ID_REGISTRY_PERMISSION` | Writes both directions at once, so they cannot drift. Rejects a `0` standard chain id - that is the unset marker of both tables and can never be a key. Pass `0` as the native id to **clear** a lane, which makes every send to and receive from that chain revert at the adapter; inbound messages already in flight fail on arrival. A repoint `delete`s the previous reverse entry first, or the retired selector would go on resolving and the receive path would keep accepting messages over a lane governance believes it closed. |
+
+> **The registry is a trust dependency of every adapter bound to it.** Whoever holds
+> `MANAGE_CHAIN_ID_REGISTRY_PERMISSION` can repoint a live lane at a different bridge-native chain
+> in a single call, sending messages to the wrong chain, and the adapter follows without notice. It
+> warrants the same governance rigor as `MANAGE_CONTROLLER_CONFIG_PERMISSION` on the controller.
 
 ### `Executor`
 

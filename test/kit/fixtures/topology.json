@@ -11,6 +11,7 @@
     "multisigRepo": "0x9e7956C8758470dE159481e5DD0d08F8B59217A2",
     "ccipRouter": "0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59",
     "ccipFeeToken": "0x0000000000000000000000000000000000000000",
+    "ccipChainSelector": 16015286601757825753,
     "dao": { "subdomain": "", "metadata": "ipfs://hub" },
     "governance": { "members": ["0x000000000000000000000000000000000000A11c"], "minApprovals": 1 }
   },
@@ -27,6 +28,7 @@
       "multisigRepo": "0x705596219C1C31dd92E3449c8E04251CcacCb6aB",
       "ccipRouter": "0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93",
       "ccipFeeToken": "0x0000000000000000000000000000000000000000",
+      "ccipChainSelector": 10344971235874465080,
       "dao": { "subdomain": "", "metadata": "ipfs://satellite" },
       "governance": { "members": ["0x000000000000000000000000000000000000A11c"], "minApprovals": 1 }
     }

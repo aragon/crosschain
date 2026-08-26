@@ -8,12 +8,13 @@ libs = ["lib"]
 optimizer = true
 optimizer_runs = 200
 
-# The deploy kit reads its topology from JSON. Read-only, and scoped to the one
-# place a config lives in THIS repo: the kit's own test fixtures. A CONSUMER of
-# the kit needs its own grant for wherever it keeps its config --
+# Two JSON config sources, both read-only: the deploy kit's topology fixture and
+# the chain-id/selector table the test suite seeds its registries from. A
+# CONSUMER of the kit needs its own grant for wherever it keeps its config --
 # `fs_permissions` is per-project and does not travel with the submodule.
 fs_permissions = [
     { access = "read", path = "./test/kit/fixtures" },
+    { access = "read", path = "./test/fixtures" },
 ]
 
 # CI sets `FOUNDRY_PROFILE: ci`. Without a section to select, forge falls back to

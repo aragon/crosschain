@@ -94,7 +94,7 @@ consumer owes the kit exactly this:
 | 2 | hub controller | prepared through the PSP — permissionless, so satellite adapters can bake its address in |
 | 3 | satellite DAOs | plugin-less, so `DAOFactory` grants the deployer `EXECUTE` |
 | 4 | satellite controllers | one sweep, dedicated `Executor`, one build pinned on the hub |
-| 5 | adapters + satellite routing | hub-and-spoke, trusted remotes verified on both sides |
+| 5 | chain id registries, adapters + satellite routing | one registry per chain, owned by that chain's DAO and seeded with the lanes it resolves; then hub-and-spoke adapters, trusted remotes verified on both sides |
 | 6 | satellite governance | the multisig default, or your hook — see [Satellite governance](#satellite-governance) |
 | 7 | satellite handover | the deployer's `EXECUTE` revoked on every DAO the kit created |
 
@@ -125,11 +125,13 @@ property holds. These live in non-virtual code:
 | the executor is never the DAO | otherwise any inbound message clearing the adapter executes with full DAO authority |
 | no controller holds a permission on its DAO | same, from the other side. Prevented by construction rather than checked: the setup is given `address(0)` for the executor slot, which is what makes it mint a dedicated one |
 | every adapter trusts the remote CONTROLLER | read back off both adapters after deployment. `trustedRemote` is constructor-only with no setter, so a lane wired to a DAO, or to the remote adapter instead of its controller, deploys quietly and then reverts every inbound message — and repair needs new adapters on both chains |
-| every adapter can map the chain ids it serves | asked of the deployed bytecode, not of the two hand-maintained lists that decide which adapter class to construct. A chain absent from the table gets an adapter that reverts `UNKNOWN_CHAIN_ID` on every send |
+| every adapter can map the chain ids it serves | asked of the registry the deployed adapter is actually bound to, not of the config that was meant to seed it. A missing or mistyped `ccipChainSelector`, or a pair written to the wrong chain's registry, gets an adapter that reverts `UNKNOWN_CHAIN_ID` on every send over that lane |
+| every DAO can manage its own chain id registry | the registry is granted to the DAO, never to the deploying key. Without the grant, adding a chain later means replacing adapters on both sides; with it granted to the deployer instead, the handover would leave behind an authority that can repoint a live lane |
 | the hub's lanes are read back after routing | `_routeHub` writes controller storage; the check reads `chainToAdapter` back rather than trusting the write, because adapter-side reads say nothing about what the controller learned |
 | the PSP never keeps `ROOT` | it needs `ROOT` for one transaction; longer is a second unconditional authority |
 | every fork is the chain config claims | an adapter's trusted remote is fixed at construction, so a wrong RPC is permanent |
 | adapters only after every controller exists | an adapter names the controller on the other side |
+| registries before adapters | an adapter takes its registry as a constructor argument and has no setter |
 | one controller build across the deployment | resolved as "latest" on the hub — always the first prepare — then demanded everywhere; asking each chain's repo independently splits builds across a lane |
 | `minFailedMessageGas != 0`, checked at prepare | the value is baked into the proxy's `initialize` when it is prepared; a zero reserve lets an out-of-gas payload revert delivery, leaving the message unreachable by both retry and cancel |
 
@@ -200,6 +202,7 @@ have:
     "multisigRepo": "0x…",               // the zero address if you override _configureSatellite
     "ccipRouter": "0x…",
     "ccipFeeToken": "0x0000000000000000000000000000000000000000",  // zero = native currency
+    "ccipChainSelector": 5009297550715157269,   // CCIP's own id for THIS chain
     "dao": { "subdomain": "my-dao", "metadata": "ipfs://…" },
     "governance": { "members": ["0x…", "0x…"], "minApprovals": 2 }
   },
@@ -208,6 +211,14 @@ have:
   "minFailedMessageGas": 45000
 }
 ```
+
+`ccipChainSelector` is CCIP's own id for the chain the block describes, not for
+its counterpart. The kit seeds each chain's `ChainIdRegistry` with the selectors
+of the chains it talks to, reading them from the other blocks — so the hub's
+selector ends up in every satellite's registry, and vice versa. Get one wrong and
+`_requireMapsChain` fails before the run finishes, but AFTER the satellites are
+handed over: it is config, so it is checked at the same point every other
+placeholder is.
 
 **Every key above is required on every chain, including the ones you do not use.**
 The loader reads scalars one path at a time and does not probe for absence, so a
