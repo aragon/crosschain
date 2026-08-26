@@ -15,17 +15,11 @@ abstract contract BaseAdapter is IBaseAdapter {
     /// @notice The address of crosschain controller.
     address public immutable override CROSS_CHAIN_CONTROLLER;
 
-    /// @notice The chain id translation table this adapter resolves its lanes
-    ///         through.
-    /// @dev Immutable rather than stored, for the same reason as
-    ///      `CCIPAdapter.FEE_TOKEN`: the send path runs under `delegatecall`
-    ///      from the controller, where a storage read would resolve against the
-    ///      controller's slots. An immutable is baked into this adapter's
-    ///      bytecode and reads correctly in either context.
-    ///
-    ///      One registry per adapter, and repointing it means a new adapter -
-    ///      which is the trade for making the TABLE governable without one. See
-    ///      {ChainIdRegistry} for what that hands to the permission holder.
+    /// @notice The chain id translation table this adapter resolves lanes through.
+    /// @dev Immutable, not stored: under the send path's `delegatecall` a storage
+    ///      read would resolve against the controller's slots. Repointing it
+    ///      requires a new adapter; the table behind it is governed. See
+    ///      {ChainIdRegistry}.
     IChainIdRegistry public immutable CHAIN_ID_REGISTRY;
 
     /// @notice This adapter's own address, captured at construction.
@@ -72,8 +66,7 @@ abstract contract BaseAdapter is IBaseAdapter {
     ///        CONTEXT (`address(this) == CROSS_CHAIN_CONTROLLER`); the caller
     ///        itself is never checked. It is also the account the receive path
     ///        reports to.
-    /// @param _chainIdRegistry The chain id table this adapter resolves lanes
-    ///        through. Must be a deployed contract; the binding has no setter.
+    /// @param _chainIdRegistry The chain id table. Must be a deployed contract.
     /// @param _trustedRemoteConfigs The remote controllers trusted to originate
     ///        messages, per standard chain id.
     constructor(
@@ -83,9 +76,7 @@ abstract contract BaseAdapter is IBaseAdapter {
     ) {
         if (_crossChainController == address(0)) revert Errors.ZERO_ADDRESS();
 
-        // Also covers `address(0)`, which trivially has no code. An adapter
-        // bound to a codeless registry reverts on every lane, in both
-        // directions, and cannot be repaired.
+        // Also covers `address(0)`, which trivially has no code.
         if (_chainIdRegistry.code.length == 0) revert Errors.HAS_NO_CODE(_chainIdRegistry);
 
         CROSS_CHAIN_CONTROLLER = _crossChainController;
@@ -98,11 +89,9 @@ abstract contract BaseAdapter is IBaseAdapter {
     // -------------------------------------------------------------------------
     // Chain id mapping
     //
-    // Both directions are resolved by the bound registry, and both revert on an
-    // unmapped id: `IChainIdRegistry` answers `0`, but returning that here would
-    // silently address chain zero rather than failing. Neither is `virtual` --
-    // the registry is the only source of truth by construction, so a subclass
-    // cannot quietly reintroduce a second table.
+    // The registry answers `0` for an unmapped id; returning that would address
+    // chain zero, so both directions revert instead. Not `virtual`: the registry
+    // is the only source of truth.
     // -------------------------------------------------------------------------
 
     /// @inheritdoc IBaseAdapter

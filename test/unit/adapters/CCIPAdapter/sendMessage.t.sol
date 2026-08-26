@@ -45,15 +45,9 @@ contract CCIPAdapterSendMessageTest is CCIPAdapterBase {
         delegateCallerMock.delegateCall{ value: 1 ether }(address(isolationAdapter), data);
     }
 
-    /// @dev The registry stores a `uint256`, but a CCIP selector is a `uint64`.
-    ///      Nothing on the write path narrows it, so whoever holds
-    ///      `MANAGE_CHAIN_ID_REGISTRY_PERMISSION` can seed a value the cast
-    ///      cannot represent -- a fat-fingered selector, most likely. The cast
-    ///      must revert rather than silently truncate it and dispatch to
-    ///      whatever lane the low 64 bits happen to name.
-    ///
-    ///      Reachable through config now; before the registry it took a
-    ///      subclass with a wider map, which is why that mock is gone.
+    /// @dev The registry stores `uint256` and nothing narrows it on write, so a
+    ///      fat-fingered selector can exceed `uint64`. The cast must revert
+    ///      rather than truncate and dispatch to whatever the low 64 bits name.
     function test_revertsIfNativeChainIdDoesNotFitUint64() public {
         seedPair(registry, CHAIN_SEPOLIA, uint256(type(uint64).max) + 1);
         _registerLane(CHAIN_SEPOLIA, address(adapter), remoteAdapter);

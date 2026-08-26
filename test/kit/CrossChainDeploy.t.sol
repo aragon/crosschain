@@ -260,9 +260,8 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance, ChainsFixture {
     address internal constant SEP_ROUTER = 0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59;
     address internal constant BASESEP_ROUTER = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
 
-    // From `test/fixtures/chains.json`, the same file a topology config is
-    // written against. `immutable` rather than `constant`: a JSON read is a
-    // call, not a compile-time expression.
+    // From `test/fixtures/chains.json`. `immutable` rather than `constant`: a
+    // JSON read is a call, not a compile-time expression.
     uint256 internal immutable SEPOLIA;
     uint256 internal immutable BASE_SEPOLIA;
     uint256 internal immutable ETHEREUM;
@@ -527,12 +526,9 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance, ChainsFixture {
     }
 
     /// @notice Each chain's registry carries the REMOTE lane, read back through
-    ///         the adapter that is bound to it.
-    /// @dev The kit's own `_requireMapsChain` covers the forward direction, so
-    ///         what this adds is the inverse -- the receive path resolves an
-    ///         inbound selector back to the origin chain id -- and the negative:
-    ///         a chain nothing seeded still reverts, so a passing forward check
-    ///         is not just "the registry answers everything".
+    ///         the adapter bound to it.
+    /// @dev `_requireMapsChain` covers the forward direction; this adds the
+    ///      inverse and the negative.
     function test_fullRun_seedsEachChainIdRegistryWithItsRemoteLane() public {
         _run();
 
@@ -556,8 +552,7 @@ contract CrossChainDeployKitTest is CrossChainDeployConformance, ChainsFixture {
 
     /// @notice Governance can add a chain to a live deployment without touching
     ///         the adapters -- the reason the registry exists.
-    /// @dev Runs AFTER the handover, as the satellite's governor, so it proves
-    ///      the authority survives the kit letting go rather than relying on
+    /// @dev Runs AFTER the handover, as the governor, so it does not lean on
     ///      leftover deployer permissions.
     function test_afterHandover_governanceCanAddAChainWithoutANewAdapter() public {
         _run();

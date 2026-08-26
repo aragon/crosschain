@@ -186,7 +186,6 @@ abstract contract CrossChainE2EBase is ChainsFixture, ICrossChainControllerEvent
         c.controller = _deployController(c.dao, c.executor);
         c.executor.transferOwnership(address(c.controller));
 
-        // The registry before the adapter: the binding is constructor-only.
         // C only ever talks to the origin, so that is the one lane it resolves.
         c.registry = _deployRegistry(c.dao);
         c.registry.setChainIdPair(ORIGIN_CHAIN_ID, ORIGIN_SELECTOR);
@@ -255,8 +254,7 @@ abstract contract CrossChainE2EBase is ChainsFixture, ICrossChainControllerEvent
         a.executor.transferOwnership(address(a.controller));
         b.executor.transferOwnership(address(b.controller));
 
-        // One registry per chain, seeded with the lane that chain has to
-        // resolve -- the remote one, in both directions. Deployed before the
+        // One registry per chain, seeded with the remote lane. Before the
         // adapters, which bind them in the constructor.
         a.registry = _deployRegistry(a.dao);
         b.registry = _deployRegistry(b.dao);
@@ -298,11 +296,9 @@ abstract contract CrossChainE2EBase is ChainsFixture, ICrossChainControllerEvent
     }
 
     /// @notice The chain id table one stack's adapter resolves lanes through.
-    /// @dev Deployed BEFORE the adapter that binds it: constructor-only, no
-    ///      setter. This test contract holds ROOT on the DAO, so it grants
-    ///      itself the manager permission and seeds directly. A real deployment
-    ///      makes the same two calls through governance -- see
-    ///      `CrossChainDeploy._deployRegistries`.
+    /// @dev This test contract holds ROOT, so it grants itself the manager
+    ///      permission and seeds directly; a real deployment goes through
+    ///      governance.
     function _deployRegistry(DAO _dao) internal returns (ChainIdRegistry registry_) {
         registry_ = new ChainIdRegistry(IDAO(address(_dao)));
         _dao.grant(address(registry_), address(this), Permissions.MANAGE_CHAIN_ID_REGISTRY_PERMISSION_ID);

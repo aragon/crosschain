@@ -32,10 +32,8 @@ contract ChainIdRegistry is IChainIdRegistry, DaoAuthorizable {
     mapping(uint256 => uint256) private _fromNative;
 
     /// @param _dao The DAO whose permission manager authorizes updates.
-    /// @dev `DaoAuthorizable` does not reject a zero DAO, and one built with it
-    ///      is permanently unusable: every `auth` call reads `hasPermission` off
-    ///      `address(0)`, which has no code. The adapter binds its registry as
-    ///      an immutable, so that state is not repairable either.
+    /// @dev `DaoAuthorizable` does not reject a zero DAO, and every `auth` call
+    ///      would then read `hasPermission` off an address with no code.
     constructor(IDAO _dao) DaoAuthorizable(_dao) {
         if (address(_dao) == address(0)) revert Errors.ZERO_ADDRESS();
     }

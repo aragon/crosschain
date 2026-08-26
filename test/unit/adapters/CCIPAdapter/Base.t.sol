@@ -31,22 +31,19 @@ abstract contract CCIPAdapterBase is ChainsFixture, ICrossChainControllerEvents 
     ///      initialized with. See `CrossChainController.initialize`.
     uint256 internal constant MIN_FAILED_MESSAGE_GAS = 45_000;
 
-    // Read from `test/fixtures/chains.json`, so they cannot drift from the
-    // values a topology config is written against. `immutable` rather than
-    // `constant` because a JSON read is a call, not a compile-time expression.
+    // From `test/fixtures/chains.json`. `immutable` rather than `constant`
+    // because a JSON read is a call, not a compile-time expression.
     uint64 internal immutable SEL_ETH_MAINNET;
     uint64 internal immutable SEL_BASE;
     uint64 internal immutable SEL_ARBITRUM_ONE;
-    // A real CCIP selector this fixture deliberately does NOT seed into the
-    // registry, used to exercise the unmapped path.
+    // Deliberately not seeded, to exercise the unmapped path.
     uint64 internal immutable SEL_SEPOLIA;
 
     uint256 internal immutable CHAIN_ETH_MAINNET;
     uint256 internal immutable CHAIN_BASE;
     uint256 internal immutable CHAIN_ARBITRUM_ONE;
-    // Sepolia's chain id: a real chain left out of the seeded set, used to
-    // exercise the unmapped path. Deliberately not a low integer, so growing
-    // the seeded set can never silently turn this into a mapped chain.
+    // Left out of the seeded set. Not a low integer, so growing that set can
+    // never silently turn this into a mapped chain.
     uint256 internal immutable CHAIN_SEPOLIA;
 
     constructor() {
@@ -66,12 +63,10 @@ abstract contract CCIPAdapterBase is ChainsFixture, ICrossChainControllerEvents 
 
     DAOMock internal daoMock;
     /// @dev A second, permanently-open DAO owning the registry, so seeding does
-    ///      not have to flip `daoMock`'s single global permission flag. What the
-    ///      registry authorizes is `ChainIdRegistry.t.sol`'s subject, not this
-    ///      suite's.
+    ///      not flip `daoMock`'s single global permission flag. Registry
+    ///      authorization is `ChainIdRegistry.t.sol`'s subject.
     DAOMock internal registryDao;
-    /// @dev The chain id table every adapter in this fixture is bound to,
-    ///      seeded with mainnet, Base and Arbitrum One. Sepolia is left out.
+    /// @dev Seeded with mainnet, Base and Arbitrum One. Sepolia is left out.
     ChainIdRegistry internal registry;
     CrossChainController internal controller;
     CCIPRouterMock internal router;
@@ -117,8 +112,7 @@ abstract contract CCIPAdapterBase is ChainsFixture, ICrossChainControllerEvents 
         router = new CCIPRouterMock();
         feeTokenErc20 = new ERC20Mock("Fee Token", "FEE");
 
-        // The registry comes BEFORE the adapters: the binding is a constructor
-        // argument with no setter, exactly as a real deployment has to order it.
+        // Before the adapters: the binding is a constructor argument.
         registryDao = new DAOMock();
         registryDao.setHasPermissionReturnValueMock(true);
         registry = new ChainIdRegistry(IDAO(address(registryDao)));

@@ -162,13 +162,10 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
         destination.executor.transferOwnership(address(destination.controller));
         destination.target = new GuardedTarget();
 
-        // Registries, then adapters, then wiring, on each side. A registry is
-        // deployed per fork for the same reason the controller implementation
-        // is: code on one fork does not exist on the other.
-        //
-        // Seeded with the WHOLE mainnet set rather than just the lane in use,
-        // because `test_fork_everyMappedSelectorIsALiveLane` checks every one of
-        // them against the real Router through this adapter.
+        // Registries, then adapters, then wiring, on each side -- one per fork,
+        // since code on one fork does not exist on the other. Seeded with the
+        // whole mainnet set, not just the lane in use, because
+        // `test_fork_everyMappedSelectorIsALiveLane` checks all of them.
         vm.selectFork(ethFork);
         origin.registry = _deployRegistry(origin.dao);
         _seedMainnetChains(origin.registry);
@@ -418,13 +415,10 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
     ///      3. INVERSION. `fromNativeChainId` must undo `toNativeChainId`, since
     ///         the two tables are maintained by hand and separately.
     ///
-    ///      WHAT IS UNDER TEST IS NOW `test/fixtures/chains.json`, reached
-    ///      through the registry the adapter is bound to. {_seedMainnetChains}
-    ///      seeds every mainnet entry of that file, so a mis-transcribed
-    ///      selector there fails here -- the same protection the hardcoded
-    ///      `CCIPChainIds` table used to get, pointed at the file that replaced
-    ///      it. `_chainSelectorPairs` stays an INDEPENDENT transcription: check
-    ///      1 is worthless if both sides are copied from the same place.
+    ///      WHAT IS UNDER TEST is `test/fixtures/chains.json`, reached through
+    ///      the registry the adapter is bound to. `_chainSelectorPairs` stays an
+    ///      INDEPENDENT transcription: check 1 is worthless if both sides are
+    ///      copied from the same place.
     ///
     ///      COVERAGE IS PINNED, NOT FLOORED. `_MAPPED_CHAIN_COUNT` is an exact
     ///      equality: a chain silently dropping out fails here rather than
@@ -552,10 +546,8 @@ contract CCIPRealRouterForkTest is CrossChainE2EBase {
         pairs[23] = [uint256(747474), 2459028469735686113]; // Katana
     }
 
-    /// @dev The mainnet chains `chains.json` carries, seeded into a registry so
-    ///      the fork checks can read them back through the adapter. Listed by
-    ///      NAME: the numbers live in the file, and duplicating them here would
-    ///      defeat the point of checking it.
+    /// @dev Listed by NAME: the numbers live in `chains.json`, and duplicating
+    ///      them here would defeat the point of checking it.
     function _seedMainnetChains(ChainIdRegistry _registry) internal {
         string[15] memory names = [
             "ethereum",

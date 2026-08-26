@@ -163,19 +163,9 @@ abstract contract CrossChainDeployConformance is Test {
         );
     }
 
-    /// @dev Prevents: a chain table nobody can change, and a chain table the
-    ///      deploying key can change forever.
-    ///
-    ///      The registry is a trust dependency of the adapter bound to it -- the
-    ///      permission holder can repoint a live lane at another chain in one
-    ///      call, and the binding is constructor-only. So the DAO must hold it
-    ///      (or adding a chain later means replacing adapters on both sides)
-    ///      and the deployer must not (or the handover left an authority behind
-    ///      that `assertDeployerCannotExecute` does not look at).
-    ///
-    ///      Also checks the adapter points at the registry the run reports. An
-    ///      adapter bound to some OTHER registry would pass every other
-    ///      assertion here while governance edits a table nothing reads.
+    /// @dev Prevents: a chain table nobody can change, and an adapter bound to a
+    ///      registry other than the one the run reports -- which would pass every
+    ///      other assertion while governance edits a table nothing reads.
     function assertDaoOwnsItsChainIdRegistry(Deployed memory _c) internal view {
         assertEq(
             address(BaseAdapter(_c.adapter).CHAIN_ID_REGISTRY()),
@@ -189,10 +179,7 @@ abstract contract CrossChainDeployConformance is Test {
         );
     }
 
-    /// @dev Pairs with {assertDaoOwnsItsChainIdRegistry} on a DAO the kit
-    ///      CREATED, where the deployer's authority is the kit's to return.
-    ///      Separate from the satellite set only because the hub's deployer
-    ///      revocation is the consumer's call, not the kit's.
+    /// @dev Satellites only: the hub's deployer revocation is the consumer's.
     function assertDeployerCannotManageChainIdRegistry(Deployed memory _c, address _deployer) internal view {
         assertFalse(
             DAO(payable(_c.dao))

@@ -5,13 +5,10 @@ pragma solidity ^0.8.17;
 import { CCIPAdapterBase } from "./Base.t.sol";
 import { Errors } from "@src/lib/Errors.sol";
 
-/// @notice Tests the standard <-> CCIP-native chain id mapping
-///         (`toNativeChainId` / `fromNativeChainId`), which `BaseAdapter`
+/// @notice Tests `toNativeChainId` / `fromNativeChainId`, which `BaseAdapter`
 ///         resolves off the bound `ChainIdRegistry`.
-/// @dev The registry answers `0` for an unmapped id; the adapter turns that into
-///      a revert, because returning it would address chain zero rather than
-///      fail. Both directions are checked for that here -- what the registry
-///      itself stores is `ChainIdRegistry.t.sol`'s subject.
+/// @dev What the registry itself stores is `ChainIdRegistry.t.sol`'s subject;
+///      this covers the adapter's revert-on-unmapped wrapper.
 contract CCIPAdapterChainIdMappingTest is CCIPAdapterBase {
     function test_toNativeChainId_returnsConfiguredSelector() public view {
         assertEq(adapter.toNativeChainId(CHAIN_ETH_MAINNET), uint256(SEL_ETH_MAINNET));
@@ -40,8 +37,7 @@ contract CCIPAdapterChainIdMappingTest is CCIPAdapterBase {
         }
     }
 
-    /// @dev The point of the registry: a chain the adapter could not serve at
-    ///      deployment becomes serveable without replacing the adapter.
+    /// @dev The point of the registry: no new adapter to serve a new chain.
     function test_seedingANewChainMakesTheLaneResolvable_withoutANewAdapter() public {
         vm.expectRevert(abi.encodeWithSelector(Errors.UNKNOWN_CHAIN_ID.selector, CHAIN_SEPOLIA));
         adapter.toNativeChainId(CHAIN_SEPOLIA);
@@ -52,10 +48,8 @@ contract CCIPAdapterChainIdMappingTest is CCIPAdapterBase {
         assertEq(adapter.fromNativeChainId(uint256(SEL_SEPOLIA)), CHAIN_SEPOLIA);
     }
 
-    /// @dev The other side of that: the same permission repoints a LIVE lane at
-    ///      a different chain, and the adapter follows without notice. This is
-    ///      the trust the registry hands the permission holder, asserted so it
-    ///      cannot be lost track of.
+    /// @dev The same permission repoints a LIVE lane, and the adapter follows
+    ///      without notice. Asserted so the trust it hands the holder is visible.
     function test_repointingALiveLaneChangesWhereTheAdapterSends() public {
         assertEq(adapter.toNativeChainId(CHAIN_ETH_MAINNET), uint256(SEL_ETH_MAINNET));
 

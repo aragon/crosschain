@@ -572,8 +572,8 @@ contract CrossChainRoundTripTest is ChainsFixture, ICrossChainControllerEvents {
         a.executor.transferOwnership(address(a.controller));
         b.executor.transferOwnership(address(b.controller));
 
-        // One registry per chain, seeded with the remote lane it has to
-        // resolve. Before the adapters, which bind them in the constructor.
+        // One registry per chain, seeded with the remote lane. Before the
+        // adapters, which bind them in the constructor.
         a.registry = _deployRegistry(a.dao);
         b.registry = _deployRegistry(b.dao);
         a.registry.setChainIdPair(DESTINATION_CHAIN_ID, DESTINATION_SELECTOR);
@@ -613,9 +613,8 @@ contract CrossChainRoundTripTest is ChainsFixture, ICrossChainControllerEvents {
         _configureLane(b, ORIGIN_CHAIN_ID, address(a.adapter));
     }
 
-    /// @dev Deployed BEFORE the adapter that binds it: constructor-only, no
-    ///      setter. The mock DAO grants this test the manager permission
-    ///      directly; a real deployment routes the same call through governance.
+    /// @dev The mock DAO grants this test the manager permission directly; a
+    ///      real deployment routes the same call through governance.
     function _deployRegistry(CrossChainControllerDAOMock _dao) internal returns (ChainIdRegistry registry_) {
         registry_ = new ChainIdRegistry(IDAO(address(_dao)));
         _dao.setHasPermission(

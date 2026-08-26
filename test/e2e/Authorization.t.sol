@@ -228,10 +228,8 @@ contract CrossChainAuthorizationE2ETest is CrossChainE2EBase {
 
     /// @notice A selector the adapter CAN map, but for which no trusted remote
     ///         was configured, is rejected too.
-    /// @dev The seeding is the premise, not setup noise: a stack only seeds the
-    ///      lanes it uses, so without this the delivery would fail one step
-    ///      earlier with `UNKNOWN_NATIVE_CHAIN_ID` and prove nothing about the
-    ///      trusted-remote check.
+    /// @dev The seeding is the premise: without it the delivery fails one step
+    ///      earlier with `UNKNOWN_NATIVE_CHAIN_ID`.
     function test_auth_mappedSelectorWithoutATrustedRemoteIsRejected() public {
         uint64 polygonSelector = ccipSelector("polygon");
         destination.registry.setChainIdPair(UNCONFIGURED_CHAIN_ID, polygonSelector);

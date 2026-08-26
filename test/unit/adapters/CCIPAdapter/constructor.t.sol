@@ -99,9 +99,6 @@ contract CCIPAdapterConstructorTest is CCIPAdapterBase {
     }
 
     /// @dev Same guard as the router: the zero address trivially has no code.
-    ///      An adapter bound to a codeless registry reverts on every lane in
-    ///      both directions and has no setter to repair it, so it is rejected at
-    ///      construction rather than discovered on the first send.
     function test_revertsIfRegistryIsZeroAddress() public {
         vm.expectRevert(abi.encodeWithSelector(Errors.HAS_NO_CODE.selector, address(0)));
         new CCIPAdapter(
@@ -118,9 +115,8 @@ contract CCIPAdapterConstructorTest is CCIPAdapterBase {
         );
     }
 
-    /// @dev `BaseAdapter` validates the registry before `CCIPAdapter` reaches
-    ///      the router: base constructors run first. Asserted so the message a
-    ///      deployer gets names the argument that is actually wrong.
+    /// @dev Base constructors run first, so the revert names the registry rather
+    ///      than the router.
     function test_registryIsRejectedBeforeTheRouter() public {
         address eoaRegistry = makeAddr("EOA_REGISTRY");
         address eoaRouter = makeAddr("EOA_ROUTER");

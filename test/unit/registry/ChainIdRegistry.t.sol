@@ -16,10 +16,9 @@ import { CrossChainControllerDAOMock } from "@mocks/CrossChainControllerDAOMock.
 
 /// @title ChainIdRegistryTest
 /// @notice The chain id table adapters resolve their lanes through.
-/// @dev Uses `CrossChainControllerDAOMock` rather than the commons `DAOMock`:
-///      its `hasPermission` is per `(where, who, permissionId)`, so "the manager
-///      may write, nobody else may" is expressible. The commons mock is a single
-///      global flag and would authorize every caller at once.
+/// @dev Uses `CrossChainControllerDAOMock`: its `hasPermission` is per
+///      `(where, who, permissionId)`, so "the manager may, nobody else may" is
+///      expressible. The commons `DAOMock` is one global flag.
 contract ChainIdRegistryTest is Test {
     CrossChainControllerDAOMock internal dao;
     ChainIdRegistry internal registry;
@@ -49,10 +48,8 @@ contract ChainIdRegistryTest is Test {
         assertEq(address(registry.dao()), address(dao));
     }
 
-    /// @dev `DaoAuthorizable` does not check this itself, and the resulting
-    ///      registry is unusable rather than merely misconfigured: every `auth`
-    ///      call reads `hasPermission` off an address with no code. The adapter
-    ///      binds its registry as an immutable, so there is no repair either.
+    /// @dev `DaoAuthorizable` does not check this itself, and every `auth` call
+    ///      would read `hasPermission` off an address with no code.
     function test_revertsIfTheDaoIsZeroAddress() public {
         vm.expectRevert(Errors.ZERO_ADDRESS.selector);
         new ChainIdRegistry(IDAO(address(0)));
@@ -62,8 +59,7 @@ contract ChainIdRegistryTest is Test {
     // Reads before anything is written
     // -------------------------------------------------------------------------
 
-    /// @dev `0` is the "unset" answer in both directions. `BaseAdapter` is what
-    ///      turns it into a revert -- see {BaseAdapter-toNativeChainId}.
+    /// @dev `0` is the "unset" answer; `BaseAdapter` turns it into a revert.
     function test_bothDirectionsAnswerZeroBeforeAnyPairIsSet() public view {
         assertEq(registry.toNative(CHAIN), 0);
         assertEq(registry.fromNative(SELECTOR), 0);
@@ -104,7 +100,6 @@ contract ChainIdRegistryTest is Test {
     }
 
     /// @dev `0` is the unset marker of both tables, so it can never be a key.
-    ///      Accepting it would make an unmapped chain read as mapped.
     function test_revertsForAZeroStandardChainId() public {
         vm.expectRevert(Errors.INVALID_CHAIN_ID.selector);
         vm.prank(manager);
@@ -121,10 +116,9 @@ contract ChainIdRegistryTest is Test {
         assertEq(registry.fromNative(SELECTOR), 0, "reverse entry must be cleared");
     }
 
-    /// @dev The invariant the `delete` in `setChainIdPair` exists for. Without
-    ///      it the retired selector keeps resolving to this chain, and the
-    ///      RECEIVE path goes on accepting messages over a lane governance
-    ///      believes it retired -- silently, because the send path looks right.
+    /// @dev What the `delete` in `setChainIdPair` exists for. Without it the
+    ///      retired selector keeps resolving and the receive path goes on
+    ///      accepting messages over a lane governance believes it retired.
     function test_repointingALaneDropsTheStaleReverseEntry() public {
         vm.startPrank(manager);
         registry.setChainIdPair(CHAIN, SELECTOR);
@@ -136,9 +130,8 @@ contract ChainIdRegistryTest is Test {
         assertEq(registry.fromNative(SELECTOR), 0, "the retired selector must stop resolving");
     }
 
-    /// @dev Repointing to the value already stored must not clear the pair: the
-    ///      `delete` of the old reverse entry and the write of the new one are
-    ///      the same slot, and the order they happen in decides the outcome.
+    /// @dev The `delete` of the old reverse entry and the write of the new one
+    ///      hit the same slot here, so their order decides the outcome.
     function test_repointingToTheSameSelectorIsANoOp() public {
         vm.startPrank(manager);
         registry.setChainIdPair(CHAIN, SELECTOR);
@@ -149,10 +142,9 @@ contract ChainIdRegistryTest is Test {
         assertEq(registry.fromNative(SELECTOR), CHAIN);
     }
 
-    /// @dev Two chains sharing one selector is a misconfiguration, but the
-    ///      registry must still not corrupt itself: the reverse entry belongs to
-    ///      whoever wrote last, and the loser's forward entry survives. Pinned
-    ///      so the asymmetry is a known state rather than a surprise.
+    /// @dev A misconfiguration the registry permits. Pinned so the asymmetry --
+    ///      last writer owns the reverse entry, both forward entries survive --
+    ///      is a known state rather than a surprise.
     function test_twoChainsPointedAtOneSelector_lastWriterOwnsTheReverseEntry() public {
         vm.startPrank(manager);
         registry.setChainIdPair(CHAIN, SELECTOR);

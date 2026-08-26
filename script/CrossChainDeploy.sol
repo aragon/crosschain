@@ -161,11 +161,8 @@ abstract contract CrossChainDeploy is Script {
         require(_chain.crossChainRepo != address(0), "crossChainRepo missing");
         require(_chain.ccipRouter != address(0), "ccipRouter missing");
         require(_chain.ccipChainSelector != 0, "ccipChainSelector missing");
-        // The registry stores a `uint256` and nothing narrows it on write, but a
-        // CCIP selector is a `uint64`: the adapter `SafeCast`s at every quote
-        // and send. Caught here, this is a config typo before any broadcast;
-        // uncaught, it deploys and hands over cleanly and then reverts every
-        // send over the lane.
+        // A CCIP selector is a `uint64`; the registry stores `uint256` and the
+        // adapter `SafeCast`s at every send.
         require(
             _chain.ccipChainSelector <= type(uint64).max, "ccipChainSelector is wider than a CCIP selector (uint64)"
         );
@@ -738,26 +735,13 @@ abstract contract CrossChainDeploy is Script {
         console.log("[4] lanes verified: trusted remotes and chain-id mappings agree on both sides");
     }
 
-    /// @dev Asks the deployed adapter, rather than trusting that
-    ///      {_deployRegistries} seeded what this lane needs. A pair written to
-    ///      the wrong chain's registry, or an adapter bound to a registry that
-    ///      was never seeded, produce an adapter that reverts
-    ///      `UNKNOWN_CHAIN_ID` on every send over that lane. The deployment
-    ///      completes; the lane never carries a message.
+    /// @dev Asks the adapter, not the config: one `staticcall` per lane against
+    ///      the registry it is actually bound to. Catches a pair seeded into the
+    ///      wrong chain's registry, or never seeded at all.
     ///
-    ///      One `staticcall` per lane settles that against the registry the
-    ///      adapter is actually bound to, which reading the config back cannot.
-    ///
-    ///      WHAT THIS DOES NOT CATCH: a selector that is wrong but non-zero.
-    ///      This proves a lane RESOLVES, never that it resolves to the right
-    ///      chain -- the kit has no oracle for that, since the selector is the
-    ///      operator's transcription. A typo naming another real chain deploys
-    ///      and hands over silently and then sends governance payloads there.
-    ///      Before the registry that was impossible, because the table was
-    ///      audited bytecode; it is the cost of making the table configurable,
-    ///      and the reason `ccipChainSelector` is worth double-checking against
-    ///      Chainlink's directory. The repair is one `setChainIdPair` through
-    ///      governance, which is the same trade in the other direction.
+    ///      Does NOT catch a selector that is wrong but non-zero -- this proves a
+    ///      lane resolves, not that it resolves to the right chain. Such a typo
+    ///      deploys silently and sends payloads to whatever chain it names.
     function _requireMapsChain(address _adapter, uint256 _chainId) private view {
         try IBaseAdapter(_adapter).toNativeChainId(_chainId) returns (uint256 native) {
             require(native != 0, "adapter maps this chain id to a zero selector");
@@ -770,28 +754,18 @@ abstract contract CrossChainDeploy is Script {
 
     /// @notice One `ChainIdRegistry` per chain, seeded with the lanes that
     ///         chain has to resolve.
-    /// @dev Runs BEFORE the adapters: an adapter takes its registry as a
-    ///      constructor argument and exposes no setter, so the registry has to
-    ///      exist first. Seeding could come later -- nothing reads the table
-    ///      until the first send -- but `_assertLanesWired` checks it at the end
-    ///      of this phase, which is the point of doing it here.
-    ///
-    ///      The DAO grants the permission to ITSELF, not to the deployer. The
-    ///      deployer already acts as the DAO through `EXECUTE`, which the
-    ///      handover revokes, so seeding needs no second authority and leaves
-    ///      none behind to pair with a revoke. Governance owning its own chain
-    ///      table is also the end state: adding a chain later is one DAO action,
-    ///      where it used to be a replacement adapter on both sides.
+    /// @dev Runs before the adapters, which take the registry in the constructor.
+    ///      The DAO grants the permission to itself: the deployer already acts as
+    ///      the DAO through `EXECUTE`, so seeding leaves no second authority to
+    ///      revoke at handover.
     function _deployRegistries() private {
         _deployRegistry(hub);
         for (uint256 i = 0; i < satellites.length; i++) {
             _deployRegistry(satellites[i]);
         }
 
-        // Mirrors the trusted-remote set exactly: the hub resolves a lane to
-        // every satellite, each satellite resolves only the hub. A pair missing
-        // here is a lane that reverts `UNKNOWN_CHAIN_ID` on every send, which
-        // `_requireMapsChain` catches before this phase returns.
+        // Mirrors the trusted-remote set: the hub resolves every satellite,
+        // each satellite resolves only the hub.
         _select(hub);
         _broadcast();
         for (uint256 i = 0; i < satellites.length; i++) {
@@ -811,24 +785,14 @@ abstract contract CrossChainDeploy is Script {
         _select(_chain);
         _broadcast();
 
-        // CREATE2 for the reason spelled out in {_newAdapter}: an address
-        // derived from a deployer nonce is not reproducible on a resumed run.
-        //
-        // The CONTROLLER is in the salt, not just the DAO, and that is the load
-        // bearing part. A salt over `(chainId, dao)` alone is constant across
-        // runs for a consumer deploying onto a hub DAO it already had, so a run
-        // that dies after this broadcast makes every later run collide here
-        // forever -- and the address is computable by anyone the moment the DAO
-        // is on chain, so a griefer could occupy it permanently. The controller
-        // is fresh per run and fixed within one, which is exactly the property
-        // {_newAdapter} relies on: stable under `--resume`, new after a restart.
+        // CREATE2 for the reason spelled out in {_newAdapter}. The CONTROLLER is
+        // in the salt: `(chainId, dao)` alone is constant across runs when the
+        // hub DAO already existed, so a failed run would collide here forever.
         bytes32 salt = keccak256(abi.encode(_chain.chainId, _chain.dao, _chain.controller, "ChainIdRegistry"));
         _chain.registry = address(new ChainIdRegistry{ salt: salt }(IDAO(_chain.dao)));
 
-        // Nothing holds this permission until it is granted, so a registry is
-        // inert until here. The grant targets the REGISTRY (`where`) and names
-        // the DAO (`who`): the registry authorizes against its DAO's permission
-        // manager, so this is the DAO permitting itself to write its own table.
+        // `where` is the REGISTRY, `who` is the DAO: the registry authorizes
+        // against its DAO's permission manager.
         _daoAction(
             _chain,
             abi.encodeCall(
@@ -840,10 +804,8 @@ abstract contract CrossChainDeploy is Script {
         console.log("[4] chain id registry", _chain.registry);
     }
 
-    /// @dev Targets the REGISTRY, not the DAO: `setChainIdPair` is gated by
-    ///      `MANAGE_CHAIN_ID_REGISTRY_PERMISSION`, which {_deployRegistry}
-    ///      granted to the DAO, so the DAO is the caller and the registry the
-    ///      callee. Caller owns `_select` and `_broadcast`.
+    /// @dev The DAO is the caller and the registry the callee. Caller owns
+    ///      `_select` and `_broadcast`.
     function _setChainIdPair(ChainCfg storage _chain, uint256 _standardChainId, uint256 _nativeChainId) private {
         _daoActionTo(
             _chain, _chain.registry, abi.encodeCall(ChainIdRegistry.setChainIdPair, (_standardChainId, _nativeChainId))
@@ -882,10 +844,8 @@ abstract contract CrossChainDeploy is Script {
     }
 
     /// @notice The adapter for the chain in scope.
-    /// @dev One class on every chain, mainnet or testnet. The chain table lives
-    ///      in the registry deployed by {_deployRegistries}, so a testnet
-    ///      rehearsal now exercises the shipping contract rather than a
-    ///      `script/`-local subclass with a different lookup baked in.
+    /// @dev One class on every chain: the chain table lives in the registry, so a
+    ///      testnet rehearsal exercises the shipping contract.
     function _newAdapter(ChainCfg storage _chain, BaseAdapter.TrustedRemoteConfig[] memory _trusted)
         private
         returns (address)

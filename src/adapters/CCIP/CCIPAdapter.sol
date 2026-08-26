@@ -50,8 +50,7 @@ contract CCIPAdapter is IERC165, IAny2EVMMessageReceiver, BaseAdapter {
     /// @param _ccipRouter The CCIP router on this chain.
     /// @param _feeToken The fee token, or `address(0)` for native. A non-native
     ///        token must be a deployed contract.
-    /// @param _chainIdRegistry The CCIP chain id <-> selector table. Deploy and
-    ///        seed it BEFORE this adapter: the binding is constructor-only.
+    /// @param _chainIdRegistry The CCIP chain id <-> selector table.
     /// @param _trustedRemoteConfigs The remote controllers trusted to originate
     ///        messages, per standard chain id.
     constructor(

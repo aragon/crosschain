@@ -85,11 +85,9 @@ contract CCIPAdapterCcipReceiveTest is CCIPAdapterBase {
     // -------------------------------------------------------------------------
 
     /// @dev Proves that reaching the RECEIVE path under `delegatecall` reverts.
-    ///      The native<->standard map needs no storage of the adapter's:
-    ///      `CHAIN_ID_REGISTRY` is an immutable baked into the ADAPTER's
-    ///      bytecode, which is the code running here, so `SEL_ETH_MAINNET`
-    ///      still resolves to `CHAIN_ETH_MAINNET` under `delegatecall`. The
-    ///      ONLY storage read on the way to `_forwardMessage` is
+    ///      `CHAIN_ID_REGISTRY` is an immutable in the ADAPTER's bytecode, which
+    ///      is the code running here, so the map still resolves under
+    ///      `delegatecall`. The ONLY storage read on the way to `_forwardMessage` is
     ///      `_trustedRemotes[originChainId]` (slot 0), which under `delegatecall`
     ///      resolves against `delegateCallerMock`'s own (otherwise empty)
     ///      storage. We plant a matching trusted-remote entry there via
