@@ -58,7 +58,7 @@ library TransactionLib {
     ///      same transaction resolves to the same id.
     function id(Transaction memory _transaction) internal pure returns (bytes32) {
         // forge-lint: disable-next-line(asm-keccak256)
-        return keccak256(abi.encode(_transaction));
+        return keccak256(_transaction.encode());
     }
 
     /// @notice The same id, hashed straight from bytes.
