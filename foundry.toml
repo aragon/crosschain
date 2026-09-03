@@ -8,6 +8,12 @@ libs = ["lib"]
 optimizer = true
 optimizer_runs = 200
 
+# The test suite reads its chain id / CCIP selector table from JSON. Read-only,
+# and scoped to that one directory.
+fs_permissions = [
+    { access = "read", path = "./test/fixtures" },
+]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
 
 [fmt]

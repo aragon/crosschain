@@ -18,7 +18,8 @@ import { CrossChainControllerDAOMock } from "@mocks/CrossChainControllerDAOMock.
 
 import { Action } from "@aragon/osx-commons-contracts/src/executors/IExecutor.sol";
 
-import { TestnetCCIPAdapter } from "./TestnetCCIPAdapter.sol";
+import { CCIPAdapter } from "@src/adapters/CCIP/CCIPAdapter.sol";
+import { ChainIdRegistry } from "@src/registry/ChainIdRegistry.sol";
 
 /// STEP 1:
 /// Bridge to Arb Sepolia: https://bridge.arbitrum.io/?sourceChain=sepolia&destinationChain=arbitrum-sepolia
@@ -68,8 +69,10 @@ contract CounterTarget {
 ///      OTHER side's CONTROLLER -- the send path is a `delegatecall`, so CCIP
 ///      attributes the message to the controller, never the adapter. So no
 ///      adapter can be built until BOTH controllers exist. The script therefore
-///      does: controllers on both chains, then adapters on both chains, then
-///      lane config on both chains -- hopping forks between each pass.
+///      does: controllers on both chains, then registry + adapter on both
+///      chains, then lane config on both chains -- hopping forks between each
+///      pass. The registry precedes its adapter for the same reason: the
+///      adapter binds it in the constructor.
 ///
 ///      Fork switching is what makes this a single command: `vm.selectFork`
 ///      moves execution between the two live networks, and each
@@ -98,6 +101,12 @@ contract Test_Deploy is Script {
     address internal constant ARB_SEPOLIA_ROUTER = 0x2a9C5afB0d0e4BAb2BCdaE109EC4b0c4Be15a165;
     address internal constant BASE_SEPOLIA_ROUTER = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
 
+    /// @dev CCIP chain selectors, same directory. Declared here rather than read
+    ///      from `test/fixtures/chains.json`: a script must not depend on the
+    ///      test tree.
+    uint64 internal constant ARB_SEPOLIA_SELECTOR = 3_478_487_238_524_512_106;
+    uint64 internal constant BASE_SEPOLIA_SELECTOR = 10_344_971_235_874_465_080;
+
     /// @notice Gas withheld so a failed inbound message is still recorded as
     ///         `Delivered`. See `CrossChainController.initialize`.
     uint256 internal constant MIN_FAILED_MESSAGE_GAS = 45_000;
@@ -109,11 +118,13 @@ contract Test_Deploy is Script {
     struct Deployment {
         uint256 forkId;
         uint256 chainId;
+        uint64 ccipSelector;
         address router;
         CrossChainControllerDAOMock dao;
         CrossChainController controller;
         Executor executor;
-        TestnetCCIPAdapter adapter;
+        ChainIdRegistry registry;
+        CCIPAdapter adapter;
         CounterTarget target;
     }
 
@@ -130,10 +141,12 @@ contract Test_Deploy is Script {
 
         arbSepolia.forkId = vm.createFork(vm.envString("ARBITRUM_SEPOLIA_RPC"));
         arbSepolia.chainId = ARBITRUM_SEPOLIA;
+        arbSepolia.ccipSelector = ARB_SEPOLIA_SELECTOR;
         arbSepolia.router = ARB_SEPOLIA_ROUTER;
 
         baseSepolia.forkId = vm.createFork(vm.envString("BASE_SEPOLIA_RPC"));
         baseSepolia.chainId = BASE_SEPOLIA;
+        baseSepolia.ccipSelector = BASE_SEPOLIA_SELECTOR;
         baseSepolia.router = BASE_SEPOLIA_ROUTER;
 
         // Pass 1: controllers on both chains.
@@ -207,7 +220,18 @@ contract Test_Deploy is Script {
             standardChainId: _remote.chainId, trustedRemote: address(_remote.controller)
         });
 
-        _local.adapter = new TestnetCCIPAdapter(address(_local.controller), _local.router, FEE_TOKEN, trusted);
+        // The chain id table first: the adapter binds it in the constructor and
+        // exposes no setter. Only the remote lane is needed on a point-to-point
+        // experiment.
+        _local.registry = new ChainIdRegistry(IDAO(address(_local.dao)));
+        _local.dao
+            .setHasPermission(
+                address(_local.registry), deployer, Permissions.MANAGE_CHAIN_ID_REGISTRY_PERMISSION_ID, true
+            );
+        _local.registry.setChainIdPair(_remote.chainId, _remote.ccipSelector);
+
+        _local.adapter =
+            new CCIPAdapter(address(_local.controller), _local.router, FEE_TOKEN, address(_local.registry), trusted);
 
         vm.stopBroadcast();
     }
@@ -336,6 +360,7 @@ contract Test_Deploy is Script {
         console.log("  CONTROLLER", address(arbSepolia.controller));
         console.log("  EXECUTOR  ", address(arbSepolia.executor));
         console.log("  ADAPTER   ", address(arbSepolia.adapter));
+        console.log("  REGISTRY  ", address(arbSepolia.registry));
         console.log("  TARGET    ", address(arbSepolia.target));
 
         console.log("========== Base Sepolia (%s) ==========", BASE_SEPOLIA);
@@ -343,6 +368,7 @@ contract Test_Deploy is Script {
         console.log("  CONTROLLER", address(baseSepolia.controller));
         console.log("  EXECUTOR  ", address(baseSepolia.executor));
         console.log("  ADAPTER   ", address(baseSepolia.adapter));
+        console.log("  REGISTRY  ", address(baseSepolia.registry));
         console.log("  TARGET    ", address(baseSepolia.target));
 
         console.log("Export these, then run sendUnderGassed() against $ARBITRUM_SEPOLIA_RPC:");

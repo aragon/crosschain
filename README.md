@@ -14,9 +14,15 @@ Inbound messages enter at the local adapter, which authenticates them and is the
 caller `receiveMessage` accepts.
 
 Adapters hold no lane configuration, but they do carry their own trusted-remote map plus an
-immutable router, fee token and chain-id table — none of which has a setter. So swapping
-bridges, or fixing any adapter-level value, means deploying a new adapter on each side of
-the lane and updating both controllers' config.
+immutable router, fee token and `ChainIdRegistry` binding — none of which has a setter. So
+swapping bridges, or fixing any adapter-level value, means deploying a new adapter on each
+side of the lane and updating both controllers' config.
+
+The chain-id table is the one exception, and deliberately so: the *binding* is immutable,
+the *table behind it* is governed. Adding a chain to a live deployment is one
+`setChainIdPair` on the registry rather than a replacement adapter on both sides. The price
+is that whoever holds `MANAGE_CHAIN_ID_REGISTRY_PERMISSION` can repoint a live lane at a
+different chain in a single call — see [`ChainIdRegistry`](./src/registry/ChainIdRegistry.sol).
 
 ## Flow
 
@@ -55,6 +61,7 @@ chain. See [Same Chain Delivery](./specs/SPEC.md#same-chain-delivery).
 | [`BaseAdapter`](./src/adapters/BaseAdapter.sol) | Shared adapter logic: controller binding, trusted remotes, execution-context checks. |
 | [`CCIPAdapter`](./src/adapters/CCIP/CCIPAdapter.sol) | Chainlink CCIP transport. |
 | [`IBaseAdapter`](./src/adapters/IBaseAdapter.sol) | The interface every transport must satisfy. |
+| [`ChainIdRegistry`](./src/registry/ChainIdRegistry.sol) | The DAO-governed chain id ↔ bridge-selector table an adapter resolves its lanes through. One per bridge protocol. |
 | [`Transaction`](./src/lib/Transaction.sol) | The message envelope and its lifecycle state. |
 
 ## Usage
@@ -103,9 +110,13 @@ remote in the constructor and has no setter, and that trusted remote is the *oth
 controller.
 
 1. Install `CrossChainController` on both chains.
-2. Deploy an adapter on each chain, pointing at the local controller and trusting the
-   remote **controller**.
-3. Call `updateConfig` on each controller with an array of remote chain ids and a
+2. Deploy a `ChainIdRegistry` on each chain, grant `MANAGE_CHAIN_ID_REGISTRY_PERMISSION`
+   on it to that chain's DAO, and seed the remote chain's `(chainId, selector)` pair. This
+   comes before the adapter: the adapter takes the registry in its constructor, has no
+   setter, and rejects one with no code.
+3. Deploy an adapter on each chain, pointing at the local controller and the local
+   registry, and trusting the remote **controller**.
+4. Call `updateConfig` on each controller with an array of remote chain ids and a
    matching array of `{ localAdapter, remoteAdapter }` configs — it is batch-only,
    and both arrays must be the same length.
 
