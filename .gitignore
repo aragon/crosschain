@@ -12,5 +12,12 @@ docs/
 
 # Dotenv file
 .env
+# just-foundry per-network overrides
+.env.*
+
+# just-foundry logs & coverage
+logs/
+report/
+lcov.info*
 
 broadcast/

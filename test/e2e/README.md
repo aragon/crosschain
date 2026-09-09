@@ -37,12 +37,12 @@ makes them fail. Every suite here goes through a real OSx `DAO`, except
 ## Running
 
 ```bash
-make test-e2e        # the end-to-end suites
-make test-e2e-fork   # needs MAINNET_RPC_URL + BASE_RPC_URL
+just test-e2e        # the end-to-end suites
+just test-fork       # needs MAINNET_RPC_URL + BASE_RPC_URL
 ```
 
 `--match-path 'test/e2e/*.t.sol'` does not exclude `fork/` — the glob crosses
-directory separators — so `make test-e2e` and a plain `forge test` both select
+directory separators — so `just test-e2e` and a plain `forge test` both select
 the fork suite. It `vm.skip`s every test when the RPC endpoints are absent, which
 is why CI is unaffected; with endpoints configured it will reach the network.
 Note it falls back to `RPC_URL` when `MAINNET_RPC_URL` is unset.

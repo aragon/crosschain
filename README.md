@@ -66,23 +66,32 @@ chain. See [Same Chain Delivery](./specs/SPEC.md#same-chain-delivery).
 
 ## Usage
 
-Requires [Foundry](https://book.getfoundry.sh/getting-started/installation).
+Requires [Foundry](https://book.getfoundry.sh/getting-started/installation) and
+[just](https://github.com/casey/just). Task running and per-network env are
+handled by [just-foundry](https://github.com/aragon/just-foundry), vendored as a
+submodule under `lib/just-foundry`.
+
+```shell
+git submodule update --init
+just init sepolia      # or mainnet, base, ... — activates the network config
+just help              # list every recipe
+```
 
 ```shell
 forge build
 forge fmt
-make test            # the whole suite
-make test-e2e        # the end-to-end suites
-make test-e2e-fork   # end-to-end against real CCIP routers; requires RPC endpoints
+just test              # the whole suite
+just test-e2e          # the end-to-end suites
+just test-fork         # end-to-end against real CCIP routers; needs RPC endpoints
 ```
 
-The fork tests are not excluded by the first two targets — they skip themselves
+The fork tests are not excluded by the first two targets: they skip themselves
 unless `MAINNET_RPC_URL` (or `RPC_URL`) and `BASE_RPC_URL` are set, in which case
-they will reach the network.
+they reach the network. `just test-fork` refuses to run without both.
 
 Unit suites live in `test/unit/`, mostly one file per function, plus a few
 cross-cutting suites. The end-to-end suites carry a message the whole way through
-both stacks — see [test/e2e/README.md](./test/e2e/README.md).
+both stacks: see [test/e2e/README.md](./test/e2e/README.md).
 
 ## Deployment
 
@@ -90,13 +99,21 @@ both stacks — see [test/e2e/README.md](./test/e2e/README.md).
 install it. `script/CreateRepo.sol` deploys the implementation, the setup contract and the
 repo in one go.
 
-Copy `.env.example` to `.env` and fill it in, then simulate and broadcast:
+Copy `.env.example` to `.env` and fill it in, activate the target network, then
+simulate and broadcast:
 
 ```shell
-make predeploy   # simulate
-make deploy      # broadcast and verify
-make verify      # re-verify from the last broadcast
+just switch sepolia    # or any other supported network
+just env               # verify the resolved env (RPC, factory addresses, ...)
+just predeploy         # simulate
+just deploy            # broadcast and verify
+just verify            # re-verify from the last broadcast
 ```
+
+`DEPLOYER_KEY` and `ETHERSCAN_API_KEY` come from `.env` (or from
+[vars](https://github.com/vars-cli/vars)); every other network parameter,
+including `PLUGIN_REPO_FACTORY_ADDRESS`, is supplied by the active network
+config under `lib/just-foundry/networks/`.
 
 Installing the plugin on a DAO goes through the OSx `PluginSetupProcessor`, pointing at
 that repo. Installation parameters are `(executor, guardian, minFailedMessageGas)` — see
