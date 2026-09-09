@@ -48,13 +48,10 @@ contract CreateRepo is Script {
         pluginRepoFactory = PluginRepoFactory(vm.envAddress("PLUGIN_REPO_FACTORY_ADDRESS"));
         vm.label(address(pluginRepoFactory), "PluginRepoFactory");
 
-        // Read the rest of environment variables
+        // Optional: an empty subdomain skips ENS registration entirely. The
+        // repo is still deployed and registered on the `PluginRepoRegistry`,
+        // it just has no ENS name.
         pluginEnsSubdomain = vm.envOr("PLUGIN_ENS_SUBDOMAIN", string(""));
-
-        // Using a random subdomain if empty
-        if (bytes(pluginEnsSubdomain).length == 0) {
-            pluginEnsSubdomain = string.concat("cross-chain-controller", vm.toString(block.timestamp));
-        }
 
         // The Aragon management DAO becomes the repo maintainer.
         // `MANAGEMENT_DAO_ADDRESS` is supplied by the active just-foundry
@@ -79,6 +76,8 @@ contract CreateRepo is Script {
         console.log("- PluginSetup:                  ", pluginSetup);
         console.log("- Implementation:               ", IPluginSetup(pluginSetup).implementation());
         console.log("- Maintainer (Management DAO):  ", managementDao);
-        console.log("- ENS subdomain:                ", pluginEnsSubdomain);
+        console.log(
+            "- ENS subdomain:                ", bytes(pluginEnsSubdomain).length == 0 ? "(none)" : pluginEnsSubdomain
+        );
     }
 }
