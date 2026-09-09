@@ -30,10 +30,10 @@ contract CreateRepo is Script {
         vm.startBroadcast(privKey);
 
         deployer = vm.addr(privKey);
-        console.log("General");
+        console.log("General:");
         console.log("- Deploying from:   ", deployer);
         console.log("- Chain ID:         ", block.chainid);
-        console.log("");
+        console.log();
 
         _;
 
@@ -74,10 +74,11 @@ contract CreateRepo is Script {
             pluginEnsSubdomain, pluginSetup, managementDao, releaseMetadataUri, buildMetadataUri
         );
 
-        console.log("PluginRepo:                  ", address(myPluginRepo));
-        console.log("CrossChainControllerSetup:   ", address(pluginSetup));
-        console.log("CrossChainController impl:   ", IPluginSetup(pluginSetup).implementation());
-        console.log("Maintainer (Management DAO): ", managementDao);
-        console.log("Subdomain:                   ", pluginEnsSubdomain);
+        console.log("CrossChainController plugin:");
+        console.log("- PluginRepo:                   ", address(myPluginRepo));
+        console.log("- PluginSetup:                  ", pluginSetup);
+        console.log("- Implementation:               ", IPluginSetup(pluginSetup).implementation());
+        console.log("- Maintainer (Management DAO):  ", managementDao);
+        console.log("- ENS subdomain:                ", pluginEnsSubdomain);
     }
 }
