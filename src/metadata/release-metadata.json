@@ -1,0 +1,5 @@
+{
+  "name": "Cross-Chain Controller",
+  "description": "An Aragon OSx plugin that lets a DAO execute Action[] payloads on another chain via a bridge adapter.",
+  "images": {}
+}

@@ -14,6 +14,13 @@ import { CrossChainController } from "@src/CrossChainController.sol";
 /// @title CreateRepo
 /// @notice Deploys `CrossChainControllerSetup` inside PluginRepoFactory
 contract CreateRepo is Script {
+    /// @dev Pinned metadata for the initial build; update whenever a new
+    ///      metadata JSON is re-pinned. Sources live in
+    ///      `src/{release,build}-metadata.json`; pin them with `just ipfs-pin`.
+    ///      Overridable via `RELEASE_METADATA_URI` / `BUILD_METADATA_URI` in `.env`.
+    string internal constant DEFAULT_RELEASE_METADATA_URI = "ipfs://QmSfiCe5sCkrbA7gw6xriqCVx8iR1C2eAqL1iWYp9HbDAV";
+    string internal constant DEFAULT_BUILD_METADATA_URI = "ipfs://QmZuSnnzNFA9Zw2Vzb1KgaxCqox5uzYBR3UUhbef3FoUzy";
+
     address deployer;
     string pluginEnsSubdomain;
     address managementDao;
@@ -59,8 +66,8 @@ contract CreateRepo is Script {
         managementDao = vm.envAddress("MANAGEMENT_DAO_ADDRESS");
         vm.label(managementDao, "Maintainer");
 
-        releaseMetadataUri = vm.envOr("RELEASE_METADATA_URI", bytes(" "));
-        buildMetadataUri = vm.envOr("BUILD_METADATA_URI", bytes(" "));
+        releaseMetadataUri = vm.envOr("RELEASE_METADATA_URI", bytes(DEFAULT_RELEASE_METADATA_URI));
+        buildMetadataUri = vm.envOr("BUILD_METADATA_URI", bytes(DEFAULT_BUILD_METADATA_URI));
     }
 
     function run() public broadcast {
