@@ -16,7 +16,7 @@ import { CrossChainController } from "@src/CrossChainController.sol";
 contract CreateRepo is Script {
     address deployer;
     string pluginEnsSubdomain;
-    address pluginRepoMaintainerAddress;
+    address managementDao;
     PluginRepoFactory pluginRepoFactory;
     bytes releaseMetadataUri;
     bytes buildMetadataUri;
@@ -26,14 +26,14 @@ contract CreateRepo is Script {
     address pluginSetup;
 
     modifier broadcast() {
-        uint256 privKey = vm.envUint("PRIVATE_KEY");
+        uint256 privKey = vm.envUint("DEPLOYER_KEY");
         vm.startBroadcast(privKey);
 
         deployer = vm.addr(privKey);
-        console.log("General");
+        console.log("General:");
         console.log("- Deploying from:   ", deployer);
         console.log("- Chain ID:         ", block.chainid);
-        console.log("");
+        console.log();
 
         _;
 
@@ -56,8 +56,11 @@ contract CreateRepo is Script {
             pluginEnsSubdomain = string.concat("cross-chain-controller", vm.toString(block.timestamp));
         }
 
-        pluginRepoMaintainerAddress = vm.envAddress("PLUGIN_REPO_MAINTAINER_ADDRESS");
-        vm.label(pluginRepoMaintainerAddress, "Maintainer");
+        // The Aragon management DAO becomes the repo maintainer.
+        // `MANAGEMENT_DAO_ADDRESS` is supplied by the active just-foundry
+        // network config; override in `.env` for a non-standard maintainer.
+        managementDao = vm.envAddress("MANAGEMENT_DAO_ADDRESS");
+        vm.label(managementDao, "Maintainer");
 
         releaseMetadataUri = vm.envOr("RELEASE_METADATA_URI", bytes(" "));
         buildMetadataUri = vm.envOr("BUILD_METADATA_URI", bytes(" "));
@@ -68,13 +71,14 @@ contract CreateRepo is Script {
         pluginSetup = address(new CrossChainControllerSetup(address(new CrossChainController())));
 
         myPluginRepo = pluginRepoFactory.createPluginRepoWithFirstVersion(
-            pluginEnsSubdomain, pluginSetup, pluginRepoMaintainerAddress, releaseMetadataUri, buildMetadataUri
+            pluginEnsSubdomain, pluginSetup, managementDao, releaseMetadataUri, buildMetadataUri
         );
 
-        console.log("PluginRepo:                  ", address(myPluginRepo));
-        console.log("CrossChainControllerSetup:   ", address(pluginSetup));
-        console.log("CrossChainController impl:   ", IPluginSetup(pluginSetup).implementation());
-        console.log("Maintainer:                  ", pluginRepoMaintainerAddress);
-        console.log("Subdomain:                   ", pluginEnsSubdomain);
+        console.log("CrossChainController plugin:");
+        console.log("- PluginRepo:                   ", address(myPluginRepo));
+        console.log("- PluginSetup:                  ", pluginSetup);
+        console.log("- Implementation:               ", IPluginSetup(pluginSetup).implementation());
+        console.log("- Maintainer (Management DAO):  ", managementDao);
+        console.log("- ENS subdomain:                ", pluginEnsSubdomain);
     }
 }

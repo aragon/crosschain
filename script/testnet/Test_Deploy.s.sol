@@ -25,7 +25,7 @@ import { ChainIdRegistry } from "@src/registry/ChainIdRegistry.sol";
 /// Bridge to Arb Sepolia: https://bridge.arbitrum.io/?sourceChain=sepolia&destinationChain=arbitrum-sepolia
 /// Bridge to Base Sepolia: https://testnets.superbridge.app/base-sepolia
 /// STEP 2: Include these in .env:
-///     PRIVATE_KEY=
+///     DEPLOYER_KEY=
 ///     ARBITRUM_SEPOLIA_RPC=
 ///     BASE_SEPOLIA_RPC=
 /// STEP 3: run the following command:
@@ -87,7 +87,7 @@ contract CounterTarget {
 ///      submitted.
 ///
 ///      ENV
-///        PRIVATE_KEY deployer key, funded with testnet ETH on BOTH chains
+///        DEPLOYER_KEY deployer key, funded with testnet ETH on BOTH chains
 ///        ARBITRUM_SEPOLIA_RPC Arbitrum Sepolia RPC url
 ///        BASE_SEPOLIA_RPC Base Sepolia RPC url
 ///        FUND_AMOUNT_WEI optional; native pre-funding per controller
@@ -135,7 +135,7 @@ contract Test_Deploy is Script {
     address internal deployer;
 
     function run() external {
-        deployerKey = vm.envUint("PRIVATE_KEY");
+        deployerKey = vm.envUint("DEPLOYER_KEY");
         deployer = vm.addr(deployerKey);
         uint256 fundAmount = vm.envOr("FUND_AMOUNT_WEI", uint256(0.03 ether));
 
