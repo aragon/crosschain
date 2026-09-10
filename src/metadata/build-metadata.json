@@ -1,0 +1,33 @@
+{
+  "ui": {},
+  "change": "Initial build.",
+  "pluginSetup": {
+    "prepareInstallation": {
+      "description": "The information required for the installation of build 1.",
+      "inputs": [
+        {
+          "name": "executor",
+          "type": "address",
+          "internalType": "address",
+          "description": "The executor that inbound cross-chain payloads run on. Pass address(0) to have the setup deploy a dedicated Executor owned by the plugin. Pass the DAO itself to keep execution on the DAO (the setup will grant EXECUTE_PERMISSION on the DAO to the plugin). Any other contract is taken as-is: the DAO must separately authorize the plugin to call `execute` on it, or the receive path cannot execute."
+        },
+        {
+          "name": "guardian",
+          "type": "address",
+          "internalType": "address",
+          "description": "An address granted PAUSE_PERMISSION only, so it can freeze the message paths (forward / receive / retry) but not reopen them. Pass address(0) for none."
+        },
+        {
+          "name": "minFailedMessageGas",
+          "type": "uint256",
+          "internalType": "uint256",
+          "description": "Gas the controller withholds so a failed inbound message can always be recorded as Delivered and stay retryable/cancellable. 45000 is a good default; 0 disables the reserve."
+        }
+      ]
+    },
+    "prepareUninstallation": {
+      "description": "No input is required for the uninstallation.",
+      "inputs": []
+    }
+  }
+}

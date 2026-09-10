@@ -9,6 +9,7 @@ keys:
   - DEPLOYER_KEY
   - ETHERSCAN_API_KEY
   - RPC_URL # optional override: the public RPC from the network file
+  # - PINATA_JWT
   # - REFUND_ADDRESS # optional: burner wallet refund target
 
 # Profiles are keyed by network name — just switch <network> activates the matching profile.

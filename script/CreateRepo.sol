@@ -14,6 +14,13 @@ import { CrossChainController } from "@src/CrossChainController.sol";
 /// @title CreateRepo
 /// @notice Deploys `CrossChainControllerSetup` inside PluginRepoFactory
 contract CreateRepo is Script {
+    /// @dev Pinned metadata for the initial build; update whenever a new
+    ///      metadata JSON is re-pinned. Sources live in
+    ///      `src/{release,build}-metadata.json`; pin them with `just ipfs-pin`.
+    ///      Overridable via `RELEASE_METADATA_URI` / `BUILD_METADATA_URI` in `.env`.
+    string internal constant DEFAULT_RELEASE_METADATA_URI = "ipfs://QmSfiCe5sCkrbA7gw6xriqCVx8iR1C2eAqL1iWYp9HbDAV";
+    string internal constant DEFAULT_BUILD_METADATA_URI = "ipfs://QmZuSnnzNFA9Zw2Vzb1KgaxCqox5uzYBR3UUhbef3FoUzy";
+
     address deployer;
     string pluginEnsSubdomain;
     address managementDao;
@@ -48,13 +55,10 @@ contract CreateRepo is Script {
         pluginRepoFactory = PluginRepoFactory(vm.envAddress("PLUGIN_REPO_FACTORY_ADDRESS"));
         vm.label(address(pluginRepoFactory), "PluginRepoFactory");
 
-        // Read the rest of environment variables
+        // Optional: an empty subdomain skips ENS registration entirely. The
+        // repo is still deployed and registered on the `PluginRepoRegistry`,
+        // it just has no ENS name.
         pluginEnsSubdomain = vm.envOr("PLUGIN_ENS_SUBDOMAIN", string(""));
-
-        // Using a random subdomain if empty
-        if (bytes(pluginEnsSubdomain).length == 0) {
-            pluginEnsSubdomain = string.concat("cross-chain-controller", vm.toString(block.timestamp));
-        }
 
         // The Aragon management DAO becomes the repo maintainer.
         // `MANAGEMENT_DAO_ADDRESS` is supplied by the active just-foundry
@@ -62,8 +66,8 @@ contract CreateRepo is Script {
         managementDao = vm.envAddress("MANAGEMENT_DAO_ADDRESS");
         vm.label(managementDao, "Maintainer");
 
-        releaseMetadataUri = vm.envOr("RELEASE_METADATA_URI", bytes(" "));
-        buildMetadataUri = vm.envOr("BUILD_METADATA_URI", bytes(" "));
+        releaseMetadataUri = vm.envOr("RELEASE_METADATA_URI", bytes(DEFAULT_RELEASE_METADATA_URI));
+        buildMetadataUri = vm.envOr("BUILD_METADATA_URI", bytes(DEFAULT_BUILD_METADATA_URI));
     }
 
     function run() public broadcast {
@@ -79,6 +83,8 @@ contract CreateRepo is Script {
         console.log("- PluginSetup:                  ", pluginSetup);
         console.log("- Implementation:               ", IPluginSetup(pluginSetup).implementation());
         console.log("- Maintainer (Management DAO):  ", managementDao);
-        console.log("- ENS subdomain:                ", pluginEnsSubdomain);
+        console.log(
+            "- ENS subdomain:                ", bytes(pluginEnsSubdomain).length == 0 ? "(none)" : pluginEnsSubdomain
+        );
     }
 }
